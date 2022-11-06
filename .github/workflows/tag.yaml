@@ -1,0 +1,42 @@
+name: Tag
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name'
+        required: false
+        type: string
+jobs:
+  tag:
+    name: Tag
+    runs-on: ubuntu-latest
+
+    if: (
+        github.event.pull_request.merged && 
+        github.event.label.name == 'release'
+      ) || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          ssh-key: "${{ secrets.TAG_KEY }}"
+      - name: Get Next Version
+        id: get_next_version
+        uses: thenativeweb/get-next-version@main
+      - name: Set version
+        id: vars
+        run: |
+          SEMVER="${{ steps.get_next_version.outputs.version }}"
+          INPUT="${{ github.event.inputs.tag }}"
+          echo "tag=$(echo ${INPUT:-$SEMVER})" >> $GITHUB_OUTPUT
+      - name: Create Tag
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "<>"
+          git tag ${{ steps.vars.outputs.tag }}
+          git push origin ${{ steps.vars.outputs.tag }}

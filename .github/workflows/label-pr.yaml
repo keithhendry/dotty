@@ -1,0 +1,12 @@
+name: Label PR's
+
+on:
+  pull_request_target:
+    types: [ opened, edited ]
+
+jobs:
+  label:
+    name: Label PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: bcoe/conventional-release-labels@v1

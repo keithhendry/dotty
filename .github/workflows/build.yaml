@@ -1,0 +1,48 @@
+name: Builds
+
+on: push
+
+jobs:
+  build-darwin-arm64:
+    name: Build MacOS arm64
+    runs-on: macos-12
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+    - name: Build
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: -Z unstable-options --target aarch64-apple-darwin
+    - name: Copy
+      run: |
+        mkdir -p out/
+        cp target/aarch64-apple-darwin/debug/dotty out/dotty-darwin-arm64
+    - name: Upload
+      uses: actions/upload-artifact@v3
+      with: 
+        name: build-darwin-arm64
+        path: out/dotty-darwin-arm64
+
+  build-darwin-x86_64:
+    name: Build MacOS x86-64
+    runs-on: macos-12
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+    - name: Build
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: -Z unstable-options --target x86_64-apple-darwin
+    - name: Copy
+      run: |
+        mkdir -p out/
+        cp target/x86_64-apple-darwin/debug/dotty out/dotty-darwin-x86_64
+    - name: Upload
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-darwin-x86_64
+        path: out/dotty-darwin-x86_64
