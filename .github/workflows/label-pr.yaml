@@ -11,12 +11,23 @@ jobs:
     steps:
       - uses: bcoe/conventional-release-labels@v1
         with:
-          type_labels: {
-            "feat": "feature",
-            "fix": "fix",
-            "breaking": "breaking",
-            "docs": "documentation",
-            "style": "style",
-            "refactor": "refactored",
-            "test": "testing",
-          }
+          type_labels: |
+            {
+              "feat": "feature",
+              "fix": "fix",
+              "breaking": "breaking",
+              "docs": "documentation",
+              "perf": "performance",
+              "revert": "revert",
+              "style": "style",
+              "refactor": "refactor",
+              "test": "testing",
+              "chore": "chore",
+            }
+          ignored_types: |
+            [
+              "style",
+              "refactor",
+              "test",
+              "chore"
+            ]
