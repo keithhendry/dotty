@@ -22,7 +22,7 @@ jobs:
               "style": "style",
               "refactor": "refactor",
               "test": "testing",
-              "chore": "chore",
+              "chore": "chore"
             }
           ignored_types: |
             [
