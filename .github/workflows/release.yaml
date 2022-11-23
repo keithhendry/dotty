@@ -24,18 +24,18 @@ jobs:
       with:
         command: build
         args: -Z unstable-options --target aarch64-apple-darwin --release
-    - name: Copy
+    - name: Tar
       run: |
-        mkdir -p out/
-        cp target/aarch64-apple-darwin/release/dotty out/dotty-${{ steps.vars.outputs.tag }}-darwin-arm64
+        cd target/aarch64-apple-darwin/release
+        tar -czvf dotty-${{ steps.vars.outputs.tag }}-darwin-arm64.tar.gz dotty
     - name: Upload
       uses: actions/upload-artifact@v3
       with: 
         name: build-darwin-arm64
-        path: out/dotty-${{ steps.vars.outputs.tag }}-darwin-arm64
+        path: target/aarch64-apple-darwin/release/dotty-${{ steps.vars.outputs.tag }}-darwin-arm64.tar.gz
 
-  build-darwin-x86_64:
-    name: Build MacOS x86-64
+  build-darwin-amd64:
+    name: Build MacOS amd64
     runs-on: macos-12
 
     steps:
@@ -52,21 +52,21 @@ jobs:
       with:
         command: build
         args: -Z unstable-options --target x86_64-apple-darwin --release
-    - name: Copy
+    - name: Tar
       run: |
-        mkdir -p out/
-        cp target/x86_64-apple-darwin/release/dotty out/dotty-${{ steps.vars.outputs.tag }}-darwin-x86_64
+        cd target/x86_64-apple-darwin/release
+        tar -czvf dotty-${{ steps.vars.outputs.tag }}-darwin-amd64.tar.gz dotty
     - name: Upload
       uses: actions/upload-artifact@v3
       with:
-        name: build-darwin-x86_64
-        path: out/dotty-${{ steps.vars.outputs.tag }}-darwin-x86_64
+        name: build-darwin-amd64
+        path: target/x86_64-apple-darwin/release/dotty-${{ steps.vars.outputs.tag }}-darwin-amd64.tar.gz
 
   release:
     name: Create Release
     needs:
       - build-darwin-arm64
-      - build-darwin-x86_64
+      - build-darwin-amd64
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
@@ -79,4 +79,22 @@ jobs:
         generate_release_notes: true
         files: |
           build-darwin-arm64/*
-          build-darwin-x86_64/*
+          build-darwin-amd64/*
+
+  homebrew-releaser:
+    name: Homebrew Releaser
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Release my project to my Homebrew tap
+        uses: Justintime50/homebrew-releaser@v1
+        with:
+          homebrew_owner: keithhendry
+          homebrew_tap: homebrew-dotty
+          formula_folder: formula
+          github_token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          install: 'bin.install "dotty"'
+          test: 'system "#{bin}/dotty --version"'
+          target_darwin_amd64: true
+          target_darwin_arm64: true
+          update_readme_table: true
