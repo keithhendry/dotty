@@ -18,11 +18,7 @@ jobs:
               "breaking": "breaking",
               "docs": "documentation",
               "perf": "performance",
-              "revert": "revert",
-              "style": "style",
-              "refactor": "refactor",
-              "test": "testing",
-              "chore": "chore"
+              "revert": "revert"
             }
           ignored_types: |
             [
