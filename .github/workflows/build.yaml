@@ -15,17 +15,17 @@ jobs:
       with:
         command: build
         args: -Z unstable-options --target aarch64-apple-darwin
-    - name: Copy
+    - name: Tar
       run: |
-        mkdir -p out/
-        cp target/aarch64-apple-darwin/debug/dotty out/dotty-darwin-arm64
+        cd target/aarch64-apple-darwin/debug
+        tar -czvf dotty-darwin-arm64.tar.gz dotty
     - name: Upload
       uses: actions/upload-artifact@v3
       with: 
         name: build-darwin-arm64
-        path: out/dotty-darwin-arm64
+        path: target/aarch64-apple-darwin/debug/dotty-darwin-arm64.tar.gz
 
-  build-darwin-x86_64:
+  build-darwin-amd64:
     name: Build MacOS x86-64
     runs-on: macos-12
 
@@ -37,12 +37,12 @@ jobs:
       with:
         command: build
         args: -Z unstable-options --target x86_64-apple-darwin
-    - name: Copy
+    - name: Tar
       run: |
-        mkdir -p out/
-        cp target/x86_64-apple-darwin/debug/dotty out/dotty-darwin-x86_64
+        cd target/x86_64-apple-darwin/debug
+        tar -czvf dotty-darwin-amd64.tar.gz dotty
     - name: Upload
       uses: actions/upload-artifact@v3
       with:
-        name: build-darwin-x86_64
-        path: out/dotty-darwin-x86_64
+        name: build-darwin-amd64
+        path: target/x86_64-apple-darwin/debug/dotty-darwin-amd64.tar.gz
