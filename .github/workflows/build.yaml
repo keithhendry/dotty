@@ -26,7 +26,7 @@ jobs:
         path: target/aarch64-apple-darwin/debug/dotty-darwin-arm64.tar.gz
 
   build-darwin-amd64:
-    name: Build MacOS x86-64
+    name: Build MacOS amd64
     runs-on: macos-12
 
     steps:
