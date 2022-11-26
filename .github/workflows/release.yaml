@@ -91,10 +91,12 @@ jobs:
         with:
           homebrew_owner: keithhendry
           homebrew_tap: homebrew-dotty
+          commit_owner: GitHub Actions Bot
+          commit_email: <>
           formula_folder: formula
           github_token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           install: 'bin.install "dotty"'
-          test: 'system "#{bin}/dotty --version"'
+          test: 'system "#{bin}/dotty", "--version"'
           target_darwin_amd64: true
           target_darwin_arm64: true
           update_readme_table: true
