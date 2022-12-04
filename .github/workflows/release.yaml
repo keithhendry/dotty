@@ -24,12 +24,12 @@ jobs:
     - name: Tar
       run: |
         cd target/aarch64-apple-darwin/release
-        tar -czvf dotty-${{ env.GITHUB_REF_NAME }}-darwin-arm64.tar.gz dotty
+        tar -czvf dotty-${{ github.ref_name }}-darwin-arm64.tar.gz dotty
     - name: Upload
       uses: actions/upload-artifact@v3
       with: 
         name: build-darwin-arm64
-        path: target/aarch64-apple-darwin/release/dotty-${{ env.GITHUB_REF_NAME }}-darwin-arm64.tar.gz
+        path: target/aarch64-apple-darwin/release/dotty-${{ github.ref_name }}-darwin-arm64.tar.gz
 
   build-darwin-amd64:
     name: Build MacOS amd64
@@ -49,12 +49,12 @@ jobs:
     - name: Tar
       run: |
         cd target/x86_64-apple-darwin/release
-        tar -czvf dotty-${{ env.GITHUB_REF_NAME  }}-darwin-amd64.tar.gz dotty
+        tar -czvf dotty-${{ github.ref_name  }}-darwin-amd64.tar.gz dotty
     - name: Upload
       uses: actions/upload-artifact@v3
       with:
         name: build-darwin-amd64
-        path: target/x86_64-apple-darwin/release/dotty-${{ env.GITHUB_REF_NAME }}-darwin-amd64.tar.gz
+        path: target/x86_64-apple-darwin/release/dotty-${{ github.ref_name }}-darwin-amd64.tar.gz
 
   collect-artifacts:
     name: Collect Artifacts
@@ -88,6 +88,7 @@ jobs:
       uses: actions/download-artifact@v3
       with:
         name: collect-artifacts
+        path: collect-artifacts
     - name: Release
       uses: softprops/action-gh-release@v1
       with:
@@ -105,6 +106,7 @@ jobs:
         uses: actions/download-artifact@v3
         with:
           name: collect-artifacts
+          path: collect-artifacts
       - name: Checkout
         uses: actions/checkout@v2
         with:
@@ -121,8 +123,8 @@ jobs:
             --checksums-path collect-artifacts/checksum.txt \
             --platform darwin/amd64 \
             --platform darwin/arm64 \
-            --version ${{ env.GITHUB_REF_NAME }} > formula/dotty.rb
+            --version ${{ github.ref_name }} > formula/dotty.rb
 
           git add formula/dotty.rb
-          git commit -m "Brew formula update for dotty version ${{ env.GITHUB_REF_NAME }}"
+          git commit -m "Brew formula update for dotty version ${{ github.ref_name }}"
           git push
