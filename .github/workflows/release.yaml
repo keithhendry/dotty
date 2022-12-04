@@ -102,16 +102,16 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: collect-artifacts
-          path: collect-artifacts
       - name: Checkout
         uses: actions/checkout@v2
         with:
           repository: keithhendry/homebrew-dotty
           ssh-key: "${{ secrets.HOMEBREW_RELEASE_KEY }}"
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: collect-artifacts
+          path: collect-artifacts
       - name: Generate formula
         run: |
           git config user.name "GitHub Actions Bot"
