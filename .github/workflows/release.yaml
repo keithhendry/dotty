@@ -56,8 +56,8 @@ jobs:
         name: build-darwin-amd64
         path: target/x86_64-apple-darwin/release/dotty-${{ github.ref_name }}-darwin-amd64.tar.gz
 
-  collect-artifacts:
-    name: Collect Artifacts
+  release:
+    name: Create Release
     needs:
       - build-darwin-arm64
       - build-darwin-amd64
@@ -65,37 +65,14 @@ jobs:
     steps:
     - name: Download artifacts
       uses: actions/download-artifact@v3
-    - name: Consolidate release artifacts
-      run: |
-        mkdir -p artifacts/
-        cp build-darwin-arm64/* build-darwin-amd64/* artifacts/
-    - name: Calculate checksums
-      run: |
-        cd artifacts
-        shasum -a 256 * > checksum.txt
-    - name: Upload
-      uses: actions/upload-artifact@v3
-      with:
-        name: collect-artifacts
-        path: artifacts/
-
-  release:
-    name: Create Release
-    needs: collect-artifacts
-    runs-on: ubuntu-latest
-    steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v3
-      with:
-        name: collect-artifacts
-        path: collect-artifacts
     - name: Release
       uses: softprops/action-gh-release@v1
       with:
         fail_on_unmatched_files: true
         generate_release_notes: true
         files: |
-          collect-artifacts/*
+          build-darwin-arm64/*
+          build-darwin-amd64/*
 
   homebrew-releaser:
     name: Homebrew Releaser
@@ -107,11 +84,6 @@ jobs:
         with:
           repository: keithhendry/homebrew-dotty
           ssh-key: "${{ secrets.HOMEBREW_RELEASE_KEY }}"
-      - name: Download artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: collect-artifacts
-          path: collect-artifacts
       - name: Generate formula
         run: |
           git config user.name "GitHub Actions Bot"
@@ -119,11 +91,11 @@ jobs:
           git config push.default current
 
           src/generate.py \
-            --checksums-path collect-artifacts/checksum.txt \
             --platform darwin/amd64 \
             --platform darwin/arm64 \
             --version ${{ github.ref_name }} > formula/dotty.rb
 
+          git checkout -b "release/${{ github.ref_name }}"
           git add formula/dotty.rb
           git commit -m "Brew formula update for dotty version ${{ github.ref_name }}"
           git push
