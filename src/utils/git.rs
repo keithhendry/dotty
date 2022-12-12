@@ -119,7 +119,7 @@ pub fn stage_path(repo: &Repository, path: &Path) -> Result<(), String> {
 
 fn stage_path_recursive(index: &mut Index, path: &Path) -> Result<(), git2::Error> {
     if path.is_dir() {
-        if let Ok(_) = Repository::open(path) {
+        if Repository::open(path).is_ok() {
             log::trace!("staging git submodule {}", path.display());
             index.add_path(path)?;
             return Ok(());
@@ -222,7 +222,7 @@ pub fn add_submodules(repo: &Repository, paths: &Vec<PathBuf>) -> Result<(), Str
         get_submodules(path, &mut submodules)?;
     }
     for (path, url) in &submodules {
-        if let Err(err) = repo.submodule(&url, &path, true) {
+        if let Err(err) = repo.submodule(url, path, true) {
             return Err(format!(
                 "failed to add git submodule {} with url {} - {}",
                 path.display(),
@@ -231,7 +231,7 @@ pub fn add_submodules(repo: &Repository, paths: &Vec<PathBuf>) -> Result<(), Str
             ));
         }
     }
-    if submodules.len() > 0 {
+    if !submodules.is_empty() {
         stage_path(repo, Path::new(".gitmodules"))?;
     }
     Ok(())
@@ -338,7 +338,7 @@ where
     G: FnOnce() -> Result<A, git2::Error>,
     E: FnOnce(git2::Error) -> String,
 {
-    git_func().or_else(|err| Err(err_func(err)))
+    git_func().map_err(err_func)
 }
 
 fn get_remote<'a>(repo: &'a Repository, url: Option<&str>) -> Result<Remote<'a>, git2::Error> {
@@ -385,13 +385,14 @@ fn get_branch_name(repo: &Repository) -> Result<String, git2::Error> {
     repo.head()?
         .resolve()?
         .name()
-        .map(|name| name.strip_prefix("refs/heads/"))
-        .flatten()
+        .and_then(|name| name.strip_prefix("refs/heads/"))
         .map(|name| Ok(name.to_owned()))
-        .unwrap_or(Err(git2::Error::from_str(&format!(
-            "branch name could not be resolved in git repo {}",
-            repo.path().display()
-        ))))
+        .unwrap_or_else(|| {
+            Err(git2::Error::from_str(&format!(
+                "branch name could not be resolved in git repo {}",
+                repo.path().display()
+            )))
+        })
 }
 
 fn merge(
@@ -409,7 +410,7 @@ fn merge(
     } else if analysis.0.is_normal() {
         log::trace!("doing a normal merge");
         let head_commit = repo.reference_to_annotated_commit(&repo.head()?)?;
-        normal_merge(&repo, &head_commit, &fetch_commit, remote_url)?;
+        normal_merge(repo, &head_commit, &fetch_commit, remote_url)?;
     } else {
         log::trace!("no merge needed");
     }

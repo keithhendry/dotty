@@ -46,3 +46,43 @@ jobs:
       with:
         name: build-darwin-amd64
         path: target/x86_64-apple-darwin/debug/dotty-darwin-amd64.tar.gz
+
+  build-linux-amd64:
+    name: Build Linux amd64
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+    - name: Build
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: -Z unstable-options --target x86_64-unknown-linux-gnu
+    - name: Tar
+      run: |
+        cd target/x86_64-unknown-linux-gnu/debug
+        tar -czvf dotty-linux-amd64.tar.gz dotty
+    - name: Upload
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-linux-amd64
+        path: target/x86_64-unknown-linux-gnu/debug/dotty-linux-amd64.tar.gz
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+    - name: Clippy
+      uses: actions-rs/cargo@v1
+      with:
+        command: clippy
+        args: -- -D warnings
+    - name: Formatting
+      uses: actions-rs/cargo@v1
+      with:
+        command: fmt
+        args: --check
