@@ -97,5 +97,5 @@ jobs:
 
           git checkout -b "release/${{ github.ref_name }}"
           git add formula/dotty.rb
-          git commit -m "Brew formula update for dotty version ${{ github.ref_name }}"
+          git commit -m "update(formula/dotty.rb): ${{ github.ref_name }}"
           git push
