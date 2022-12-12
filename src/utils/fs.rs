@@ -34,7 +34,7 @@ pub fn restore_symlink(from: &Path, to: &Path, move_existing_to: &Path) -> Resul
                 to.display(),
                 move_existing_to.display()
             );
-            rename(to, &move_existing_to)?;
+            rename(to, move_existing_to)?;
         }
     }
     symlink(from, to)

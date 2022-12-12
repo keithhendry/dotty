@@ -56,11 +56,37 @@ jobs:
         name: build-darwin-amd64
         path: target/x86_64-apple-darwin/release/dotty-${{ github.ref_name }}-darwin-amd64.tar.gz
 
+  build-linux-amd64:
+    name: Build Linux amd64
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+    - name: Set version
+      run: |
+        sed -i .bak "s/0.0.0/$GITHUB_REF_NAME/g" Cargo.toml
+    - name: Build
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: -Z unstable-options --target x86_64-unknown-linux-gnu --release
+    - name: Tar
+      run: |
+        cd target/x86_64-unknown-linux-gnu/release
+        tar -czvf dotty-${{ github.ref_name  }}-linux-amd64.tar.gz dotty
+    - name: Upload
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-linux-amd64
+        path: target/x86_64-unknown-linux-gnu/release/dotty-${{ github.ref_name  }}-linux-amd64.tar.gz
+
   release:
     name: Create Release
     needs:
       - build-darwin-arm64
       - build-darwin-amd64
+      - build-linux-amd64
     runs-on: ubuntu-latest
     steps:
     - name: Download artifacts
@@ -73,6 +99,7 @@ jobs:
         files: |
           build-darwin-arm64/*
           build-darwin-amd64/*
+          build-linux-amd64/*
 
   homebrew-releaser:
     name: Homebrew Releaser
@@ -93,6 +120,7 @@ jobs:
           src/generate.py \
             --platform darwin/amd64 \
             --platform darwin/arm64 \
+            --platform linux/amd64 \
             --version ${{ github.ref_name }} > formula/dotty.rb
 
           git checkout -b "release/${{ github.ref_name }}"

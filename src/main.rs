@@ -128,11 +128,11 @@ fn run(opts: &Opts) -> Result<(), String> {
 
 fn init(repo: &Path) -> Result<(), String> {
     let git_repo = git::init_or_open(repo)?;
-    let config = Config::init_or_open(&repo)?;
+    let config = Config::init_or_open(repo)?;
 
     if git::is_new(&git_repo, config.repo_path())? {
         git::stage_path(&git_repo, config.repo_path())?;
-        git::commit(&git_repo, &"initial dotty commit")?;
+        git::commit(&git_repo, "initial dotty commit")?;
     }
 
     log::info!(
@@ -155,7 +155,7 @@ fn clone(repo: &Path, url: &str) -> Result<(), String> {
 }
 
 fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String> {
-    let mut config = Config::read(&repo)?;
+    let mut config = Config::read(repo)?;
     let mut to_commit: Vec<PathBuf> = Vec::new();
     for path in paths {
         match move_to_dotty_repo(repo, root, path) {
@@ -233,7 +233,7 @@ fn build_git_message(to_commit: &Vec<PathBuf>) -> String {
 
 fn restore(repo: &Path, root: &Path) -> Result<(), String> {
     let temp_dir = fs::create_temp_dir("dotty-")?;
-    let config = Config::read(&repo)?;
+    let config = Config::read(repo)?;
     for entry in config.entries {
         let from = repo.join(&entry.path);
         let to = root.join(&entry.path);

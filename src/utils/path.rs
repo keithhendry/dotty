@@ -86,22 +86,19 @@ pub fn relative_from_root(root: &Path, path: &Path) -> Result<PathBuf, String> {
     Ok(relative)
 }
 
-pub fn common_base_path(paths: &Vec<PathBuf>) -> PathBuf {
-    paths.iter().fold(
-        PathBuf::new(),
-        |accum, item| {
-            if accum.as_os_str().is_empty() {
-                return item.to_owned();
+pub fn common_base_path(paths: &[PathBuf]) -> PathBuf {
+    paths.iter().fold(PathBuf::new(), |accum, item| {
+        if accum.as_os_str().is_empty() {
+            return item.to_owned();
+        }
+        let mut common = PathBuf::new();
+        for (left, right) in accum.components().zip(item.components()) {
+            if left.eq(&right) {
+                common.push(left);
+            } else {
+                break;
             }
-            let mut common = PathBuf::new();
-            for (left, right) in accum.components().zip(item.components()) {
-                if left.eq(&right) {
-                    common.push(left);
-                } else {
-                    break;
-                }
-            }
-            common
-        },
-    )
+        }
+        common
+    })
 }

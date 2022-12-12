@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub path: PathBuf,
 }
@@ -54,10 +54,7 @@ impl Config {
             }
         };
 
-        Ok(Config {
-            path,
-            entries
-        })
+        Ok(Config { path, entries })
     }
 
     pub fn append(&mut self, entry: &Path) {
