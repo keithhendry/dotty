@@ -65,7 +65,7 @@ jobs:
       uses: actions/checkout@v2
     - name: Set version
       run: |
-        sed -i .bak "s/0.0.0/$GITHUB_REF_NAME/g" Cargo.toml
+        sed -i "s/0.0.0/$GITHUB_REF_NAME/g" Cargo.toml
     - name: Build
       uses: actions-rs/cargo@v1
       with:
