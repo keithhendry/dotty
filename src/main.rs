@@ -1,7 +1,7 @@
 mod config;
 mod utils;
 
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Parser, ValueEnum};
 use config::Config;
 use simplelog::*;
 use std::path::{Path, PathBuf};
@@ -43,7 +43,7 @@ enum SubCommand {
     Add(Add),
     /// Restores files to the root
     Restore(Restore),
-    /// Syncs the dotty repository with the rmote
+    /// Syncs the dotty repository with the remote
     Sync(Sync),
 }
 
@@ -65,7 +65,24 @@ struct Add {
 }
 
 #[derive(Parser)]
-struct Restore {}
+struct Restore {
+    /// Restore mode
+    #[clap(short, long, value_enum, default_value = "symlinks")]
+    mode: RestoreMode,
+
+    /// Overwrites existing files/symlinks
+    #[clap(short, long, default_value = "true")]
+    overwrite: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
+enum RestoreMode {
+    /// Restore symlinks
+    Symlinks,
+
+    /// Restore files
+    Files,
+}
 
 #[derive(Parser)]
 struct Sync {
@@ -121,7 +138,9 @@ fn run(opts: &Opts) -> Result<(), String> {
         SubCommand::Init(_) => init(&repo),
         SubCommand::Clone(clone_cmd) => clone(&repo, &clone_cmd.url),
         SubCommand::Add(add_cmd) => add(&repo, &root, &add_cmd.paths),
-        SubCommand::Restore(_) => restore(&repo, &root),
+        SubCommand::Restore(restore_cmd) => {
+            restore(&repo, &root, restore_cmd.mode, restore_cmd.overwrite)
+        }
         SubCommand::Sync(sync_cmd) => sync(&repo, sync_cmd.url.as_deref()),
     }
 }
@@ -231,20 +250,28 @@ fn build_git_message(to_commit: &Vec<PathBuf>) -> String {
     }
 }
 
-fn restore(repo: &Path, root: &Path) -> Result<(), String> {
-    let temp_dir = fs::create_temp_dir("dotty-")?;
+fn restore(repo: &Path, root: &Path, mode: RestoreMode, overwrite: bool) -> Result<(), String> {
+    let overwrite = match overwrite {
+        true => Some(fs::create_overwrite_temp_dir("dotty-")?),
+        false => None,
+    };
     let config = Config::read(repo)?;
     for entry in config.entries {
         let from = repo.join(&entry.path);
         let to = root.join(&entry.path);
-        let move_existing_to = temp_dir.join(&entry.path);
-        log::debug!("restoring {} to {}", from.display(), to.display());
-        if let Err(err) = fs::restore_symlink(&from, &to, &move_existing_to) {
-            log::warn!("{}", err);
-        }
-    }
-    if let Ok(true) = fs::is_empty(&temp_dir) {
-        let _ = fs::remove_dir(&temp_dir);
+        let overwrite_entry = overwrite.as_ref().map(|o| o.entry(&entry.path));
+        log::debug!(
+            "restoring {} to {} with mode {:?}",
+            from.display(),
+            to.display(),
+            mode
+        );
+        fs::restore(
+            &from,
+            &to,
+            overwrite_entry.as_deref(),
+            mode == RestoreMode::Symlinks,
+        )?
     }
     Ok(())
 }

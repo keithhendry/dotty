@@ -15,7 +15,12 @@ pub fn move_then_symlink(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn restore_symlink(from: &Path, to: &Path, move_existing_to: &Path) -> Result<(), String> {
+pub fn restore(
+    from: &Path,
+    to: &Path,
+    overwrite: Option<&Path>,
+    symlinks: bool,
+) -> Result<(), String> {
     if !from.exists() {
         return Err(format!("{} does not exist", from.display()));
     }
@@ -23,24 +28,73 @@ pub fn restore_symlink(from: &Path, to: &Path, move_existing_to: &Path) -> Resul
         log::trace!("{} already exists", to.display());
 
         if metadata.is_symlink() {
-            if fs::canonicalize(to).map(|p| p == from).unwrap_or(false) {
+            let resolved_to = match fs::canonicalize(to) {
+                Ok(resolved) => resolved,
+                Err(err) => return Err(format!("failed to resolve {} - {}", from.display(), err)),
+            };
+
+            if resolved_to == from {
                 log::trace!("{} points to {} already", to.display(), from.display());
                 return Ok(());
             }
-            remove(to)?;
+
+            match overwrite {
+                Some(_) => {
+                    log::warn!(
+                        "removing existing symlink {} to {}",
+                        to.display(),
+                        resolved_to.display()
+                    );
+                    remove(to)?
+                }
+                None => {
+                    return Err(format!(
+                        "not overwriting symlink {} to {}",
+                        to.display(),
+                        resolved_to.display()
+                    ))
+                }
+            }
         } else {
-            log::warn!(
-                "moving existing {} to {}",
-                to.display(),
-                move_existing_to.display()
-            );
-            rename(to, move_existing_to)?;
+            match overwrite {
+                Some(move_existing_to) => {
+                    log::warn!(
+                        "moving existing {} to {}",
+                        to.display(),
+                        move_existing_to.display()
+                    );
+                    rename(to, move_existing_to)?;
+                }
+                None => return Err(format!("not overwriting existing file {}", to.display())),
+            }
         }
     }
-    symlink(from, to)
+    if symlinks {
+        symlink(from, to)
+    } else {
+        rename(from, to)
+    }
 }
 
-pub fn create_temp_dir(prefix: &str) -> Result<PathBuf, String> {
+pub struct OverwriteTempDir {
+    temp_dir: PathBuf,
+}
+
+impl Drop for OverwriteTempDir {
+    fn drop(&mut self) {
+        if let Ok(true) = is_empty(&self.temp_dir) {
+            let _ = remove_dir(&self.temp_dir);
+        }
+    }
+}
+
+impl OverwriteTempDir {
+    pub fn entry(&self, path: &Path) -> PathBuf {
+        self.temp_dir.join(path)
+    }
+}
+
+pub fn create_overwrite_temp_dir(prefix: &str) -> Result<OverwriteTempDir, String> {
     let name = prefix.to_owned() + &random_string(7);
     let temp_dir = env::temp_dir().join(name);
     if let Err(err) = fs::create_dir(&temp_dir) {
@@ -50,7 +104,7 @@ pub fn create_temp_dir(prefix: &str) -> Result<PathBuf, String> {
             err
         ));
     }
-    Ok(temp_dir)
+    Ok(OverwriteTempDir { temp_dir })
 }
 
 pub fn remove_dir(dir: &Path) -> Result<(), String> {
@@ -107,6 +161,7 @@ fn symlink(original: &Path, link: &Path) -> Result<(), String> {
         link.display(),
         original.display()
     );
+    create_parent_dir(link)?;
     if let Err(err) = unix_fs::symlink(original, link) {
         return Err(format!(
             "failed to create symlink {} to {} - {}",
