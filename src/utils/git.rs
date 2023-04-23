@@ -1,6 +1,6 @@
 use git2::{
     AnnotatedCommit, Commit, Config, Cred, CredentialType, ErrorCode, FetchOptions, Index, Oid,
-    PushOptions, Reference, Remote, RemoteCallbacks, Repository, ResetType, Status,
+    PushOptions, Reference, Remote, RemoteCallbacks, Repository, ResetType,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,17 +27,15 @@ pub fn init_or_open(path: &Path) -> Result<Repository, String> {
 }
 
 pub fn open(path: &Path) -> Result<Repository, String> {
+    log::trace!("opening git repository {}", path.display());
     git_helper(
-        || {
-            log::trace!("opening git repository {}", path.display());
-            Repository::open(path)
-        },
+        || Repository::open(path),
         |err| format!("failed to open git repository {} - {}", path.display(), err),
     )
 }
 
 pub fn check_open(path: &Path) -> bool {
-    match open(path) {
+    match Repository::open(path) {
         Ok(_) => {
             log::trace!("{} is a git repository", path.display());
             true
@@ -57,23 +55,6 @@ pub fn clone_recurse(path: &Path, url: &str) -> Result<Repository, String> {
                 "failed to clone git repository {} into {} - {}",
                 url,
                 path.display(),
-                err
-            )
-        },
-    )
-}
-
-pub fn is_new(repo: &Repository, path: &Path) -> Result<bool, String> {
-    git_helper(
-        || {
-            let is_new = repo.status_file(path)? == Status::WT_NEW;
-            Ok(is_new)
-        },
-        |err| {
-            format!(
-                "failed to get stated status for {} in git repository {} - {}",
-                path.display(),
-                repo.path().display(),
                 err
             )
         },
@@ -216,13 +197,11 @@ pub fn commit(repo: &Repository, message: &str) -> Result<Oid, String> {
     )
 }
 
-pub fn add_submodules(repo: &Repository, paths: &Vec<PathBuf>) -> Result<(), String> {
-    let mut submodules = Vec::new();
-    for path in paths {
-        get_submodules(path, &mut submodules)?;
-    }
-    for (path, url) in &submodules {
-        if let Err(err) = repo.submodule(url, path, true) {
+pub fn add_submodules(repo: &Repository, submodules: &Vec<PathBuf>) -> Result<(), String> {
+    for path in submodules {
+        let submodule_repo = open(path)?;
+        let url = get_origin(&submodule_repo)?;
+        if let Err(err) = repo.submodule(&url, path, true) {
             return Err(format!(
                 "failed to add git submodule {} with url {} - {}",
                 path.display(),
@@ -233,38 +212,6 @@ pub fn add_submodules(repo: &Repository, paths: &Vec<PathBuf>) -> Result<(), Str
     }
     if !submodules.is_empty() {
         stage_path(repo, Path::new(".gitmodules"))?;
-    }
-    Ok(())
-}
-
-fn get_submodules(path: &Path, submodules: &mut Vec<(PathBuf, String)>) -> Result<(), String> {
-    if let Ok(repo) = Repository::open(path) {
-        let url = get_origin(&repo)?;
-        submodules.push((path.to_owned(), url));
-        return Ok(());
-    }
-
-    if path.is_dir() {
-        match fs::read_dir(path) {
-            Ok(entries) => {
-                for entry_res in entries {
-                    match entry_res {
-                        Ok(entry) => {
-                            let path = entry.path();
-                            if path.file_name().map(|f| !f.eq(".git")).unwrap_or(false) {
-                                get_submodules(&entry.path(), submodules)?
-                            }
-                        }
-                        Err(err) => log::warn!(
-                            "could not read directory entry {} - {}",
-                            path.display(),
-                            err
-                        ),
-                    }
-                }
-            }
-            Err(err) => log::warn!("could not read directory {} - {}", path.display(), err),
-        }
     }
     Ok(())
 }
