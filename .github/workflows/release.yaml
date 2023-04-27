@@ -106,24 +106,32 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
+      - uses: tibdex/github-app-token@v1
+        id: generate-token
+        with:
+          app_id: ${{ secrets.HOMEBREW_DOTTY_PR_APP_ID }}
+          private_key: ${{ secrets.HOMEBREW_DOTTY_PR_APP_PRIVATE_KEY }}
       - name: Checkout
         uses: actions/checkout@v2
         with:
           repository: keithhendry/homebrew-dotty
-          ssh-key: "${{ secrets.HOMEBREW_RELEASE_KEY }}"
-      - name: Generate formula
+          token: ${{ steps.generate-token.outputs.token }}
+      - name: Generate
         run: |
-          git config user.name "GitHub Actions Bot"
-          git config user.email "<>"
-          git config push.default current
-
           src/generate.py \
             --platform darwin/amd64 \
             --platform darwin/arm64 \
             --platform linux/amd64 \
-            --version ${{ github.ref_name }} > Formula/dotty.rb
-
+            --version ${{ github.ref_name }}
+      - name: Push Release
+        run: |
           git checkout -b "release/${{ github.ref_name }}"
-          git add formula/dotty.rb
-          git commit -m "update(Formula/dotty.rb): ${{ github.ref_name }}"
+          git add -A
+          git commit -m "release: ${{ github.ref_name }}"
           git push
+      - name: Create PR
+        run: |
+          pr_url="$(gh pr create --fill)"
+          gh pr merge --auto --squash "$pr_url"
+        env:
+            GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
