@@ -1,3 +1,4 @@
+use git2::build::RepoBuilder;
 use git2::{
     AnnotatedCommit, Commit, Config, Cred, CredentialType, ErrorCode, FetchOptions, Index, Oid,
     PushOptions, Reference, Remote, RemoteCallbacks, Repository, ResetType,
@@ -48,7 +49,19 @@ pub fn clone_recurse(path: &Path, url: &str) -> Result<Repository, String> {
     git_helper(
         || {
             log::trace!("cloning git repository {} into {}", url, path.display());
-            Repository::clone_recurse(url, path)
+
+            let mut fetch_opts = FetchOptions::new();
+            fetch_opts.remote_callbacks(create_callbacks());
+
+            let mut builder = RepoBuilder::new();
+            builder.fetch_options(fetch_opts);
+
+            let repo = builder.clone(url, path)?;
+
+            log::trace!("initializing submodules in {}", path.display());
+            update_submodules(&repo)?;
+
+            Ok(repo)
         },
         |err| {
             format!(
@@ -416,5 +429,22 @@ fn normal_merge(
         &[&local_commit, &remote_commit],
     )?;
     repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))?;
+    Ok(())
+}
+
+fn update_submodules(repo: &Repository) -> Result<(), git2::Error> {
+    fn add_subrepos(repo: &Repository, list: &mut Vec<Repository>) -> Result<(), git2::Error> {
+        for mut subm in repo.submodules()? {
+            subm.update(true, None)?;
+            list.push(subm.open()?);
+        }
+        Ok(())
+    }
+
+    let mut repos = Vec::new();
+    add_subrepos(repo, &mut repos)?;
+    while let Some(repo) = repos.pop() {
+        add_subrepos(&repo, &mut repos)?;
+    }
     Ok(())
 }
