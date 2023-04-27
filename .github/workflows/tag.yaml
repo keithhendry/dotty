@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag name'
+        description: "Tag name"
         required: false
         type: string
 jobs:
@@ -15,13 +15,13 @@ jobs:
     runs-on: ubuntu-latest
 
     if: (
-        github.event.pull_request.merged && 
-        github.event.label.name == 'release'
+      github.event.pull_request.merged &&
+      github.event.label.name == 'release'
       ) || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           fetch-depth: 0
           ssh-key: "${{ secrets.TAG_KEY }}"

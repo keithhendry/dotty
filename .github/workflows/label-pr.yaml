@@ -2,7 +2,7 @@ name: Label PR's
 
 on:
   pull_request_target:
-    types: [ opened, edited ]
+    types: [opened, edited]
 
 jobs:
   label:
