@@ -121,9 +121,9 @@ jobs:
             --platform darwin/amd64 \
             --platform darwin/arm64 \
             --platform linux/amd64 \
-            --version ${{ github.ref_name }} > formula/dotty.rb
+            --version ${{ github.ref_name }} > Formula/dotty.rb
 
           git checkout -b "release/${{ github.ref_name }}"
           git add formula/dotty.rb
-          git commit -m "update(formula/dotty.rb): ${{ github.ref_name }}"
+          git commit -m "update(Formula/dotty.rb): ${{ github.ref_name }}"
           git push
