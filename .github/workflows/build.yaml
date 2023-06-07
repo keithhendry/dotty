@@ -5,7 +5,7 @@ on: push
 jobs:
   build-darwin-arm64:
     name: Build MacOS arm64
-    runs-on: macos-12
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
@@ -29,7 +29,7 @@ jobs:
 
   build-darwin-amd64:
     name: Build MacOS amd64
-    runs-on: macos-12
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
