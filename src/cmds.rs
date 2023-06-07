@@ -91,7 +91,7 @@ pub fn restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Res
         let relative_path = path::relative_from_root(repo, &from)?;
         let to = root.join(&relative_path);
         let overwrite_entry = overwrite.as_ref().map(|o| o.entry(&relative_path));
-        log::debug!("restoring {} to {}", from.display(), to.display(),);
+        log::debug!("restoring {} to {}", from.display(), to.display());
         fs::restore(&from, &to, overwrite_entry.as_deref(), symlinks)?;
     }
     Ok(())
@@ -100,6 +100,21 @@ pub fn restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Res
 pub fn sync(repo: &Path, url: Option<&str>) -> Result<(), String> {
     let git_repo = git::open(repo)?;
     git::sync(&git_repo, url)
+}
+
+pub fn update(repo: &Path) -> Result<(), String> {
+    let git_repo = git::open(repo)?;
+
+    git::unstage_all(&git_repo)?;
+    let updated = git::update_submodules(&git_repo)?;
+    if updated > 0 {
+        git::commit(&git_repo, "Updated all submodules")?;
+        log::info!("successfully updated {} submodules", updated);
+    } else {
+        log::warn!("txhere were no submodules to update");
+    }
+
+    Ok(())
 }
 
 #[derive(PartialEq)]

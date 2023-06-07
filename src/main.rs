@@ -2,7 +2,7 @@ mod cmds;
 mod utils;
 
 use clap::{ArgAction, Parser, ValueEnum};
-use cmds::{add, clone, init, restore, sync};
+use cmds::{add, clone, init, restore, sync, update};
 use simplelog::*;
 use std::path::PathBuf;
 use utils::path;
@@ -43,6 +43,8 @@ enum SubCommand {
     Restore(Restore),
     /// Syncs the dotty repository with the remote
     Sync(Sync),
+    /// Updates the submodules in the dotty repository
+    Update(Update),
 }
 
 #[derive(Parser)]
@@ -88,6 +90,9 @@ struct Sync {
     #[clap()]
     url: Option<String>,
 }
+
+#[derive(Parser)]
+struct Update {}
 
 fn init_logger(opts: &Opts) {
     let level = match opts.verbose {
@@ -135,6 +140,7 @@ fn run(opts: &Opts) -> Result<(), String> {
             restore_cmd.overwrite,
         ),
         SubCommand::Sync(sync_cmd) => sync(&repo, sync_cmd.url.as_deref()),
+        SubCommand::Update(_) => update(&repo),
     }
 }
 
