@@ -1,7 +1,8 @@
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use git2::{
-    AnnotatedCommit, Commit, Config, Cred, CredentialType, ErrorCode, FetchOptions, Index, Oid,
-    PushOptions, Reference, Remote, RemoteCallbacks, Repository, ResetType, SubmoduleUpdateOptions,
+    AnnotatedCommit, AutotagOption, Commit, Config, Cred, CredentialType, ErrorCode, FetchOptions,
+    Index, Oid, PushOptions, Reference, Remote, RemoteCallbacks, RemoteUpdateFlags, Repository,
+    ResetType, SubmoduleUpdateOptions,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,10 +11,10 @@ pub fn init_or_open(path: &Path) -> Result<Repository, String> {
     git_helper(
         || {
             if !check_open(path) {
-                log::trace!("initializing git repository {}", path.display());
+                log::debug!("initializing git repository {}", path.display());
                 Repository::init(path)
             } else {
-                log::trace!("opening git repository {}", path.display());
+                log::debug!("opening git repository {}", path.display());
                 Repository::open(path)
             }
         },
@@ -27,28 +28,10 @@ pub fn init_or_open(path: &Path) -> Result<Repository, String> {
     )
 }
 
-pub fn open(path: &Path) -> Result<Repository, String> {
-    log::trace!("opening git repository {}", path.display());
-    git_helper(
-        || Repository::open(path),
-        |err| format!("failed to open git repository {} - {}", path.display(), err),
-    )
-}
-
-pub fn check_open(path: &Path) -> bool {
-    match Repository::open(path) {
-        Ok(_) => {
-            log::trace!("{} is a git repository", path.display());
-            true
-        }
-        Err(_) => false,
-    }
-}
-
 pub fn clone_recurse(path: &Path, url: &str) -> Result<Repository, String> {
     git_helper(
         || {
-            log::trace!("cloning git repository {} into {}", url, path.display());
+            log::debug!("cloning git repository {} into {}", url, path.display());
 
             let mut fetch_opts = FetchOptions::new();
             fetch_opts.remote_callbacks(create_callbacks());
@@ -58,7 +41,7 @@ pub fn clone_recurse(path: &Path, url: &str) -> Result<Repository, String> {
 
             let repo = builder.clone(url, path)?;
 
-            log::trace!("initializing submodules in {}", path.display());
+            log::debug!("initializing submodules in {}", path.display());
 
             let mut checkout_builder = CheckoutBuilder::new();
             checkout_builder.force();
@@ -86,11 +69,33 @@ pub fn clone_recurse(path: &Path, url: &str) -> Result<Repository, String> {
     )
 }
 
+pub fn open(path: &Path) -> Result<Repository, String> {
+    log::trace!("opening git repository {}", path.display());
+    git_helper(
+        || Repository::open(path),
+        |err| format!("failed to open git repository {} - {}", path.display(), err),
+    )
+}
+
+pub fn check_open(path: &Path) -> bool {
+    match Repository::open(path) {
+        Ok(_) => {
+            log::trace!("{} is a git repository", path.display());
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 pub fn unstage_all(repo: &Repository) -> Result<(), String> {
     git_helper(
         || {
             if let Some(latest_commit) = find_last_commit(repo)? {
-                log::trace!("resetting git repository {}", repo.path().display());
+                log::debug!(
+                    "resetting git repository {} with commit {}",
+                    repo.path().display(),
+                    latest_commit.id()
+                );
                 repo.reset(&latest_commit.into_object(), ResetType::Mixed, None)?;
             }
             Ok(())
@@ -105,29 +110,17 @@ pub fn unstage_all(repo: &Repository) -> Result<(), String> {
     )
 }
 
-pub fn stage_path(repo: &Repository, path: &Path) -> Result<(), String> {
-    git_helper(
-        || {
-            let mut index = repo.index()?;
-            stage_path_recursive(&mut index, path)?;
-            index.write()
-        },
-        |err| {
-            format!(
-                "failed to stage {} in git repository {} - {}",
-                path.display(),
-                repo.path().display(),
-                err
-            )
-        },
-    )
-}
-
 pub fn stage_all_paths(repo: &Repository, paths: &Vec<PathBuf>) -> Result<(), String> {
+    log::debug!(
+        "staging {} paths in git repository {}",
+        paths.len(),
+        repo.path().display()
+    );
     git_helper(
         || {
             let mut index = repo.index()?;
             for path in paths {
+                log::trace!("staging path {}", path.display());
                 stage_path_recursive(&mut index, path)?;
             }
             index.write()
@@ -144,14 +137,13 @@ pub fn stage_all_paths(repo: &Repository, paths: &Vec<PathBuf>) -> Result<(), St
 }
 
 pub fn commit(repo: &Repository, message: &str) -> Result<Oid, String> {
+    log::debug!(
+        "creating commit in git repository {} with message {}",
+        repo.path().display(),
+        message
+    );
     git_helper(
         || {
-            log::trace!(
-                "creating commit in git repository {} with message {}",
-                repo.path().display(),
-                message
-            );
-
             let mut index = repo.index()?;
             let signature = repo.signature()?;
             let oid = index.write_tree()?;
@@ -181,10 +173,19 @@ pub fn commit(repo: &Repository, message: &str) -> Result<Oid, String> {
 }
 
 pub fn add_submodules(repo: &Repository, submodules: &Vec<PathBuf>) -> Result<(), String> {
+    log::debug!(
+        "adding {} submodules to git repository {}",
+        submodules.len(),
+        repo.path().display()
+    );
     for path in submodules {
+        log::trace!("adding submodule {}", path.display());
         let submodule_repo = open(path)?;
-        let url = get_origin(&submodule_repo)?;
-        if let Err(err) = repo.submodule(&url, path, true) {
+        let url = get_origin_url(&submodule_repo)?;
+        if let Err(err) = repo
+            .submodule(&url, path, true)
+            .and_then(|mut submodule| submodule.add_finalize())
+        {
             return Err(format!(
                 "failed to add git submodule {} with url {} - {}",
                 path.display(),
@@ -192,9 +193,6 @@ pub fn add_submodules(repo: &Repository, submodules: &Vec<PathBuf>) -> Result<()
                 err
             ));
         }
-    }
-    if !submodules.is_empty() {
-        stage_path(repo, Path::new(".gitmodules"))?;
     }
     Ok(())
 }
@@ -211,12 +209,19 @@ pub fn sync(repo: &Repository, url: Option<&str>) -> Result<(), String> {
             let branch_name = get_branch_name(repo)?;
             let mut remote = get_remote(repo, url)?;
 
+            log::debug!(
+                "fetching branch {} from remote {}",
+                branch_name,
+                remote.url().unwrap_or("unknown")
+            );
+
             let mut fetch_opts = FetchOptions::new();
             fetch_opts.remote_callbacks(create_callbacks());
-            remote.fetch(&[&branch_name], Some(&mut fetch_opts), None)?;
+            remote.download(&[&branch_name], Some(&mut fetch_opts))?;
 
             if let Ok(fetch_head) = repo.find_reference("FETCH_HEAD") {
                 let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
+                log::debug!("merging remote commit {}", fetch_commit.id());
                 merge(
                     repo,
                     &branch_name,
@@ -224,13 +229,25 @@ pub fn sync(repo: &Repository, url: Option<&str>) -> Result<(), String> {
                     remote.url().unwrap_or("unknown"),
                 )?;
             }
+
+            log::debug!("pushing branch {}", branch_name);
+
             let mut push_opts = PushOptions::new();
             push_opts.remote_callbacks(create_callbacks());
             remote.push(
                 &[format!("refs/heads/{0}:refs/heads/{0}", branch_name)],
                 Some(&mut push_opts),
             )?;
+
             remote.disconnect()?;
+
+            remote.update_tips(
+                None,
+                RemoteUpdateFlags::UPDATE_FETCHHEAD,
+                AutotagOption::Unspecified,
+                None,
+            )?;
+
             Ok(())
         },
         |err| {
@@ -246,39 +263,60 @@ pub fn sync(repo: &Repository, url: Option<&str>) -> Result<(), String> {
 pub fn update_submodules(repo: &Repository) -> Result<i32, String> {
     git_helper(
         || {
-            let mut index = repo.index()?;
             let mut updated: i32 = 0;
 
             for mut submodule in repo.submodules()? {
+                log::debug!(
+                    "updating submodule {}",
+                    submodule.name().unwrap_or("unknown")
+                );
+
                 let submodule_repo = submodule.open()?;
                 let mut remote = get_remote(&submodule_repo, None)?;
 
+                remote.connect(git2::Direction::Fetch)?;
+
                 let mut fetch_opts = FetchOptions::new();
                 fetch_opts.remote_callbacks(create_callbacks());
-                remote.fetch(&[] as &[&str], Some(&mut fetch_opts), None)?;
 
-                let mut fetch_head = submodule_repo.find_reference("FETCH_HEAD")?;
+                let default_branch_buf = remote.default_branch()?;
+                let default_branch_ref_name =
+                    default_branch_buf.as_str().unwrap_or("refs/heads/main");
+
+                log::trace!(
+                    "using branch {} for submodule {}",
+                    default_branch_ref_name,
+                    submodule.name().unwrap_or("unknown")
+                );
+
+                remote.fetch(
+                    &[default_branch_ref_name] as &[&str],
+                    Some(&mut fetch_opts),
+                    None,
+                )?;
+
+                let fetch_head = submodule_repo.find_reference("FETCH_HEAD")?;
                 let fetch_commit = submodule_repo.reference_to_annotated_commit(&fetch_head)?;
-                fast_forward(&submodule_repo, &mut fetch_head, &fetch_commit)?;
+
+                let mut branch_reference =
+                    submodule_repo.find_reference(default_branch_ref_name)?;
+                fast_forward(&submodule_repo, &mut branch_reference, &fetch_commit)?;
 
                 submodule.add_to_index(false)?;
                 updated += 1;
 
                 remote.disconnect()?;
+
+                remote.update_tips(
+                    None,
+                    RemoteUpdateFlags::UPDATE_FETCHHEAD,
+                    AutotagOption::Unspecified,
+                    None,
+                )?;
             }
 
             if updated > 0 {
-                index.add_path(Path::new(".gitmodules"))?;
-                index.write()?;
-
-                let mut checkout_builder = CheckoutBuilder::new();
-                checkout_builder.force();
-
-                let mut opts = SubmoduleUpdateOptions::new();
-                opts.checkout(checkout_builder);
-                opts.allow_fetch(false);
-
-                update_submodules_recursive(repo, true, &mut opts)?;
+                repo.index()?.write()?;
             }
 
             Ok(updated)
@@ -301,7 +339,7 @@ where
     git_func().map_err(err_func)
 }
 
-fn get_origin(repo: &Repository) -> Result<String, String> {
+fn get_origin_url(repo: &Repository) -> Result<String, String> {
     let remote = match repo.find_remote("origin") {
         Ok(remote) => remote.url().map(|p| p.to_owned()),
         Err(err) => {
@@ -324,20 +362,23 @@ fn get_origin(repo: &Repository) -> Result<String, String> {
 fn get_remote<'a>(repo: &'a Repository, url: Option<&str>) -> Result<Remote<'a>, git2::Error> {
     match url {
         Some(url) => {
+            log::trace!("using remote {}", url);
             if let Ok(remote) = repo.find_remote("origin") {
-                if remote
-                    .url()
-                    .map(|remote_url| remote_url.eq(url))
-                    .unwrap_or(false)
-                {
-                    Ok(remote)
-                } else {
-                    repo.remote_set_url("origin", url)?;
-                    repo.find_remote("origin")
+                if let Some(remote_url) = remote.url() {
+                    return match remote_url.eq(url) {
+                        true => {
+                            log::trace!("remotes match");
+                            Ok(remote)
+                        }
+                        false => {
+                            log::trace!("remote {} does not match; overwriting", remote_url);
+                            repo.remote_set_url("origin", url)?;
+                            repo.find_remote("origin")
+                        }
+                    };
                 }
-            } else {
-                repo.remote("origin", url)
             }
+            repo.remote("origin", url)
         }
         None => repo.find_remote("origin"),
     }
@@ -506,6 +547,12 @@ fn update_submodules_recursive(
         opts: &mut SubmoduleUpdateOptions,
     ) -> Result<(), git2::Error> {
         for mut subm in repo.submodules()? {
+            log::trace!(
+                "updating submodule {} (init: {}, in: {})",
+                subm.name().unwrap_or("unknown"),
+                init,
+                repo.path().display(),
+            );
             subm.update(init, Some(opts))?;
             repos.push(subm.open()?);
         }
