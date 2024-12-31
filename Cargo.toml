@@ -8,14 +8,14 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "4.2.4", features = ["derive", "env"] }
-git2 = "0.17.1"
+clap = { version = "4.5.23", features = ["derive", "env"] }
+git2 = "0.19.0"
 home-dir = "0.1.0"
-libgit2-sys = "0.15.1"
-libz-sys = { version = "1.1.8", default-features = false, features = ["libc", "static"] }
-log = "0.4.17"
-openssl = { version = "0.10.52", features = ["vendored"] }
+libgit2-sys = "0.17.0"
+libz-sys = { version = "1.1.20", default-features = false, features = ["libc", "static"] }
+log = "0.4.22"
+openssl = { version = "0.10.68", features = ["vendored"] }
 rand = "0.8.5"
-serde = { version = "1.0.160", features = ["derive"] }
-serde_yaml = "0.9.21"
-simplelog = { version = "0.12.1", features = ["paris"] }
+serde = { version = "1.0.217", features = ["derive"] }
+serde_yaml = "0.9.34"
+simplelog = { version = "0.12.2", features = ["paris"] }

@@ -118,6 +118,7 @@ pub fn create_overwrite_temp_dir(prefix: &str) -> Result<OverwriteTempDir, Strin
             err
         ));
     }
+    log::trace!("created overwrite temp dir {}", temp_dir.display());
     Ok(OverwriteTempDir { temp_dir })
 }
 

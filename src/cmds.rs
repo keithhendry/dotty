@@ -56,7 +56,7 @@ pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String>
         log::info!(
             "successfully added {} to dotty repository {}",
             if to_commit.len() == 1 {
-                to_commit.get(0).unwrap().display().to_string()
+                to_commit.first().unwrap().display().to_string()
             } else {
                 format!("{} paths", to_commit.len())
             },
@@ -94,12 +94,24 @@ pub fn restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Res
         log::debug!("restoring {} to {}", from.display(), to.display());
         fs::restore(&from, &to, overwrite_entry.as_deref(), symlinks)?;
     }
+
+    log::info!(
+        "successfully restored dotty repository {} to {}, by {}",
+        repo.display(),
+        root.display(),
+        match symlinks {
+            true => "creating symlinks",
+            false => "copying files",
+        }
+    );
     Ok(())
 }
 
 pub fn sync(repo: &Path, url: Option<&str>) -> Result<(), String> {
     let git_repo = git::open(repo)?;
-    git::sync(&git_repo, url)
+    git::sync(&git_repo, url)?;
+    log::info!("successfully synced dotty repository");
+    Ok(())
 }
 
 pub fn update(repo: &Path) -> Result<(), String> {
@@ -111,7 +123,7 @@ pub fn update(repo: &Path) -> Result<(), String> {
         git::commit(&git_repo, "Updated all submodules")?;
         log::info!("successfully updated {} submodules", updated);
     } else {
-        log::warn!("txhere were no submodules to update");
+        log::warn!("there are no submodules to update");
     }
 
     Ok(())
@@ -168,7 +180,7 @@ fn move_to_dotty_repo(repo: &Path, root: &Path, path: &Path) -> Result<Option<Pa
 fn build_git_message(to_commit: &Vec<PathBuf>) -> String {
     match to_commit.len() {
         0 => String::default(),
-        1 => format!("adding {}", to_commit.get(0).unwrap().display()),
+        1 => format!("adding {}", to_commit.first().unwrap().display()),
         _ => {
             let mut msg = format!(
                 "adding {} files to {}\n\n",
