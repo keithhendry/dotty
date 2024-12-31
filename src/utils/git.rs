@@ -217,7 +217,7 @@ pub fn sync(repo: &Repository, url: Option<&str>) -> Result<(), String> {
 
             let mut fetch_opts = FetchOptions::new();
             fetch_opts.remote_callbacks(create_callbacks());
-            remote.download(&[&branch_name], Some(&mut fetch_opts))?;
+            remote.fetch(&[&branch_name], Some(&mut fetch_opts), None)?;
 
             if let Ok(fetch_head) = repo.find_reference("FETCH_HEAD") {
                 let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
