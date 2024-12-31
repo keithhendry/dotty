@@ -9,7 +9,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Setup Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -22,7 +22,7 @@ jobs:
           cd target/aarch64-apple-darwin/debug
           tar -czvf dotty-darwin-arm64.tar.gz dotty
       - name: Upload
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: build-darwin-arm64
           path: target/aarch64-apple-darwin/debug/dotty-darwin-arm64.tar.gz
@@ -33,7 +33,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Setup Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -46,7 +46,7 @@ jobs:
           cd target/x86_64-apple-darwin/debug
           tar -czvf dotty-darwin-amd64.tar.gz dotty
       - name: Upload
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: build-darwin-amd64
           path: target/x86_64-apple-darwin/debug/dotty-darwin-amd64.tar.gz
@@ -57,7 +57,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Setup Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -70,7 +70,7 @@ jobs:
           cd target/x86_64-unknown-linux-gnu/debug
           tar -czvf dotty-linux-amd64.tar.gz dotty
       - name: Upload
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: build-linux-amd64
           path: target/x86_64-unknown-linux-gnu/debug/dotty-linux-amd64.tar.gz
@@ -81,7 +81,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Setup Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
