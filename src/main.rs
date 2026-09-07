@@ -16,6 +16,7 @@ use clap::{ArgAction, Parser, ValueEnum};
 use cmds::{add, clone, init, restore, sync, update};
 use simplelog::*;
 use std::path::PathBuf;
+use std::process;
 use utils::path;
 
 #[derive(Parser)]
@@ -167,11 +168,15 @@ fn run(opts: &Opts) -> Result<(), String> {
     }
 }
 
-/// Parses arguments, starts logging, and reports any failure as a log message.
+/// Parses arguments, starts logging, and runs the requested command.
+///
+/// A failure is logged and exits non-zero, so that dotty can be used in a
+/// script or chained with `&&` without a failed command looking like a success.
 fn main() {
     let opts: Opts = Opts::parse();
     init_logger(&opts);
     if let Err(err) = run(&opts) {
         log::error!("{}", err);
+        process::exit(1);
     }
 }
