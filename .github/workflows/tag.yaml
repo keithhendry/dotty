@@ -1,23 +1,19 @@
 name: Tag
 
+# Tagging is deliberate: run this workflow by hand when the commits on main add
+# up to a release. Pushing the tag it creates is what triggers release.yaml.
 on:
-  pull_request:
-    types: [closed]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag name"
+        description: "Tag name, or empty to use the next semantic version"
         required: false
         type: string
+
 jobs:
   tag:
     name: Tag
     runs-on: ubuntu-latest
-
-    if: (
-      github.event.pull_request.merged &&
-      github.event.label.name == 'release'
-      ) || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout
