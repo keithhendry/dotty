@@ -420,6 +420,75 @@ fn restore_with_overwrite_moves_the_existing_file_aside() {
     );
 }
 
+// A machine being migrated onto dotty is exactly the one likely to be holding
+// stale dotfile symlinks. Refusing to touch them failed the whole restore, even
+// with --overwrite, which is the flag for "deal with whatever is in the way".
+#[test]
+fn restore_replaces_a_dangling_symlink() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".dotty/.zshrc", "from the repository\n");
+    std::os::unix::fs::symlink("/nonexistent/gone", machine.path(".zshrc")).unwrap();
+
+    assert_ok(&machine.dotty(&["restore"]));
+
+    assert_eq!(
+        fs::read_link(machine.path(".zshrc")).unwrap(),
+        machine.repo().join(".zshrc")
+    );
+}
+
+#[test]
+fn restore_in_files_mode_can_be_run_again() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".dotty/.zshrc", "shell\n");
+    assert_ok(&machine.dotty(&["restore", "--mode", "files"]));
+
+    assert_ok(&machine.dotty(&["restore", "--mode", "files"]));
+
+    assert_eq!(machine.read(".zshrc"), "shell\n");
+}
+
+// The copy being identical is what makes a repeat run a no-op; a real local
+// edit is still something the user has to decide about.
+#[test]
+fn restore_in_files_mode_still_refuses_to_discard_a_local_edit() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".dotty/.zshrc", "shell\n");
+    assert_ok(&machine.dotty(&["restore", "--mode", "files"]));
+    machine.write(".zshrc", "edited by hand\n");
+
+    let output = machine.dotty(&["restore", "--mode", "files"]);
+
+    assert_failed(&output);
+    assert_eq!(machine.read(".zshrc"), "edited by hand\n");
+}
+
+#[test]
+fn restore_carries_on_past_a_conflict_and_reports_what_failed() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    for name in ["a", "b", "c"] {
+        machine.write(&format!(".dotty/.file-{name}"), name);
+    }
+    machine.write(".file-b", "already here\n");
+
+    let output = machine.dotty(&["restore"]);
+
+    assert_failed(&output);
+    assert!(
+        text(&output).contains("restored 2 of 3 paths"),
+        "expected a summary, got: {}",
+        text(&output)
+    );
+    // The two that could be restored were, rather than being abandoned.
+    assert!(is_symlink(&machine.path(".file-a")));
+    assert!(is_symlink(&machine.path(".file-c")));
+    assert_eq!(machine.read(".file-b"), "already here\n");
+}
+
 // ---------------------------------------------------------------- sync + clone
 
 #[test]
