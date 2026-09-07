@@ -1,22 +1,96 @@
-name: Release Builds
+name: Release
 
+# One run does the whole release: work out the version, tag it, build every
+# target from that tag, publish, and open the Homebrew tap pull request.
+#
+# Running this by hand is the normal path. The push trigger is kept so that a
+# tag pushed from a laptop still produces a release; in that case the tag
+# already exists and the version job simply reports it back.
+#
+# Nothing here needs a deploy key or a personal token. The built in
+# GITHUB_TOKEN can push a tag perfectly well; what it cannot do is *trigger*
+# another workflow, which is why tagging and releasing now live in one run.
 on:
   push:
     tags:
       - "[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version to release, or empty for the next semantic version"
+        required: false
+        type: string
+
+permissions:
+  contents: write
 
 jobs:
-  build-darwin-arm64:
-    name: Build MacOS arm64
-    runs-on: macos-latest
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # get-next-version reads the conventional commits back to the last
+          # release tag, so it needs the whole history.
+          fetch-depth: 0
+      - name: Get next version
+        id: next
+        if: github.event_name == 'workflow_dispatch'
+        uses: thenativeweb/get-next-version@main
+      - name: Resolve the version
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          PUSHED_TAG: ${{ github.ref_name }}
+          REQUESTED: ${{ inputs.tag }}
+          COMPUTED: ${{ steps.next.outputs.version }}
+        run: |
+          if [ "$EVENT" = "push" ]; then
+            TAG="$PUSHED_TAG"
+          else
+            TAG="${REQUESTED:-$COMPUTED}"
+          fi
+          # A typo here would become a permanent tag and a published release,
+          # and the value is interpolated into later shell and file names.
+          if ! printf '%s' "$TAG" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "refusing to release '$TAG': expected MAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          echo "releasing $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Create the tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "<>"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+  build-darwin-arm64:
+    name: Build macOS arm64
+    needs: version
+    runs-on: macos-latest
+
+    env:
+      VERSION: ${{ needs.version.outputs.tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
       - name: Set version
         run: |
-          sed -i .bak "s/^version = \"0\.0\.0\"\$/version = \"$GITHUB_REF_NAME\"/" Cargo.toml Cargo.lock
-          grep -q "^version = \"$GITHUB_REF_NAME\"\$" Cargo.toml
+          sed -i .bak "s/^version = \"0\.0\.0\"\$/version = \"$VERSION\"/" Cargo.toml Cargo.lock
+          grep -q "^version = \"$VERSION\"\$" Cargo.toml
       - name: Setup Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -27,24 +101,30 @@ jobs:
       - name: Tar
         run: |
           cd target/aarch64-apple-darwin/release
-          tar -czvf dotty-${{ github.ref_name }}-darwin-arm64.tar.gz dotty
+          tar -czvf "dotty-$VERSION-darwin-arm64.tar.gz" dotty
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: build-darwin-arm64
-          path: target/aarch64-apple-darwin/release/dotty-${{ github.ref_name }}-darwin-arm64.tar.gz
+          path: target/aarch64-apple-darwin/release/dotty-${{ needs.version.outputs.tag }}-darwin-arm64.tar.gz
 
   build-darwin-amd64:
-    name: Build MacOS amd64
+    name: Build macOS amd64
+    needs: version
     runs-on: macos-latest
+
+    env:
+      VERSION: ${{ needs.version.outputs.tag }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
       - name: Set version
         run: |
-          sed -i .bak "s/^version = \"0\.0\.0\"\$/version = \"$GITHUB_REF_NAME\"/" Cargo.toml Cargo.lock
-          grep -q "^version = \"$GITHUB_REF_NAME\"\$" Cargo.toml
+          sed -i .bak "s/^version = \"0\.0\.0\"\$/version = \"$VERSION\"/" Cargo.toml Cargo.lock
+          grep -q "^version = \"$VERSION\"\$" Cargo.toml
       - name: Setup Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -55,24 +135,30 @@ jobs:
       - name: Tar
         run: |
           cd target/x86_64-apple-darwin/release
-          tar -czvf dotty-${{ github.ref_name  }}-darwin-amd64.tar.gz dotty
+          tar -czvf "dotty-$VERSION-darwin-amd64.tar.gz" dotty
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: build-darwin-amd64
-          path: target/x86_64-apple-darwin/release/dotty-${{ github.ref_name }}-darwin-amd64.tar.gz
+          path: target/x86_64-apple-darwin/release/dotty-${{ needs.version.outputs.tag }}-darwin-amd64.tar.gz
 
   build-linux-amd64:
     name: Build Linux amd64
+    needs: version
     runs-on: ubuntu-latest
+
+    env:
+      VERSION: ${{ needs.version.outputs.tag }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
       - name: Set version
         run: |
-          sed -i "s/^version = \"0\.0\.0\"\$/version = \"$GITHUB_REF_NAME\"/" Cargo.toml Cargo.lock
-          grep -q "^version = \"$GITHUB_REF_NAME\"\$" Cargo.toml
+          sed -i "s/^version = \"0\.0\.0\"\$/version = \"$VERSION\"/" Cargo.toml Cargo.lock
+          grep -q "^version = \"$VERSION\"\$" Cargo.toml
       - name: Setup Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -83,26 +169,31 @@ jobs:
       - name: Tar
         run: |
           cd target/x86_64-unknown-linux-gnu/release
-          tar -czvf dotty-${{ github.ref_name  }}-linux-amd64.tar.gz dotty
+          tar -czvf "dotty-$VERSION-linux-amd64.tar.gz" dotty
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: build-linux-amd64
-          path: target/x86_64-unknown-linux-gnu/release/dotty-${{ github.ref_name  }}-linux-amd64.tar.gz
+          path: target/x86_64-unknown-linux-gnu/release/dotty-${{ needs.version.outputs.tag }}-linux-amd64.tar.gz
 
   release:
     name: Create Release
     needs:
+      - version
       - build-darwin-arm64
       - build-darwin-amd64
       - build-linux-amd64
     runs-on: ubuntu-latest
+
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
+          # On a manual run the ref is the branch, not the tag, so the release
+          # has to be told which tag it belongs to.
+          tag_name: ${{ needs.version.outputs.tag }}
           fail_on_unmatched_files: true
           generate_release_notes: true
           files: |
@@ -112,8 +203,14 @@ jobs:
 
   homebrew-releaser:
     name: Homebrew Releaser
-    needs: release
+    needs:
+      - version
+      - release
     runs-on: ubuntu-latest
+
+    env:
+      VERSION: ${{ needs.version.outputs.tag }}
+
     steps:
       - uses: tibdex/github-app-token@v2
         id: generate-token
@@ -132,16 +229,16 @@ jobs:
             --platform darwin/amd64 \
             --platform darwin/arm64 \
             --platform linux/amd64 \
-            --version ${{ github.ref_name }}
+            --version "$VERSION"
       - name: Push Release
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "<>"
           git config push.default current
 
-          git checkout -b "release/${{ github.ref_name }}"
+          git checkout -b "release/$VERSION"
           git add -A
-          git commit -m "release: ${{ github.ref_name }}"
+          git commit -m "release: $VERSION"
 
           git push
       - name: Create PR
