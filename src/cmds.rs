@@ -141,12 +141,40 @@ pub fn restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Res
         .map(|x| x.0)
         .collect();
 
+    // One awkward file should not decide the fate of the rest. Failing on the
+    // first one left the machine half configured, with no account of what had
+    // and had not been put in place; `add` has always reported and carried on.
+    let total = paths_to_restore.len();
+    let mut failed = 0;
+
     for from in paths_to_restore {
         let relative_path = path::relative_from_root(repo, &from)?;
         let to = root.join(&relative_path);
         let overwrite_entry = overwrite.as_ref().map(|o| o.entry(&relative_path));
         log::debug!("restoring {} to {}", from.display(), to.display());
-        fs::restore(&from, &to, overwrite_entry.as_deref(), symlinks)?;
+        if let Err(err) = fs::restore(&from, &to, overwrite_entry.as_deref(), symlinks) {
+            log::warn!("{}", err);
+            failed += 1;
+        }
+    }
+
+    if let Some(overwrite) = overwrite.as_ref() {
+        if !fs::is_empty(overwrite.path())? {
+            log::warn!(
+                "files already on this machine were moved to {}",
+                overwrite.path().display()
+            );
+        }
+    }
+
+    if failed > 0 {
+        return Err(format!(
+            "restored {} of {} paths to {}; {} could not be restored",
+            total - failed,
+            total,
+            root.display(),
+            failed
+        ));
     }
 
     log::info!(
@@ -179,10 +207,15 @@ pub fn update(repo: &Path) -> Result<(), String> {
     let git_repo = git::open(repo)?;
 
     git::unstage_all(&git_repo)?;
-    let updated = git::update_submodules(&git_repo)?;
-    if updated > 0 {
+    let outcome = git::update_submodules(&git_repo)?;
+
+    // Committing whenever there are submodules at all, rather than when one
+    // actually moved, wrote an empty commit on every run.
+    if outcome.changed > 0 {
         git::commit(&git_repo, "Updated all submodules")?;
-        log::info!("successfully updated {} submodules", updated);
+        log::info!("successfully updated {} submodules", outcome.changed);
+    } else if outcome.total > 0 {
+        log::info!("all {} submodules are already up to date", outcome.total);
     } else {
         log::warn!("there are no submodules to update");
     }
