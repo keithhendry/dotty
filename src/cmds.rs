@@ -188,10 +188,15 @@ pub fn update(repo: &Path) -> Result<(), String> {
     let git_repo = git::open(repo)?;
 
     git::unstage_all(&git_repo)?;
-    let updated = git::update_submodules(&git_repo)?;
-    if updated > 0 {
+    let outcome = git::update_submodules(&git_repo)?;
+
+    // Committing whenever there are submodules at all, rather than when one
+    // actually moved, wrote an empty commit on every run.
+    if outcome.changed > 0 {
         git::commit(&git_repo, "Updated all submodules")?;
-        log::info!("successfully updated {} submodules", updated);
+        log::info!("successfully updated {} submodules", outcome.changed);
+    } else if outcome.total > 0 {
+        log::info!("all {} submodules are already up to date", outcome.total);
     } else {
         log::warn!("there are no submodules to update");
     }
