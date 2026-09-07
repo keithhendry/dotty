@@ -794,6 +794,130 @@ fn update_does_nothing_when_there_are_no_submodules() {
     );
 }
 
+// ---------------------------------------------------------------- remove
+
+#[test]
+fn remove_puts_the_real_file_back_and_stops_tracking_it() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".zshrc", "export EDITOR=nvim\n");
+    assert_ok(&machine.dotty(&["add", ".zshrc"]));
+
+    assert_ok(&machine.dotty(&["remove", ".zshrc"]));
+
+    // Exactly as though dotty had never touched it.
+    assert!(!is_symlink(&machine.path(".zshrc")));
+    assert_eq!(machine.read(".zshrc"), "export EDITOR=nvim\n");
+    assert!(!machine.repo().join(".zshrc").exists());
+
+    let repo = machine.repo();
+    let repo = repo.to_str().unwrap();
+    assert_eq!(git_ok(&machine.home, &["-C", repo, "ls-files"]), "");
+    assert_eq!(
+        git_ok(&machine.home, &["-C", repo, "log", "-1", "--format=%s"]),
+        "removing .zshrc"
+    );
+    assert_eq!(
+        git_ok(&machine.home, &["-C", repo, "status", "--porcelain"]),
+        ""
+    );
+}
+
+// A submodule carries its own history, which has to come back with it.
+#[test]
+fn remove_gives_a_submodule_back_with_its_history() {
+    let machine = Machine::new();
+    let upstream = Remote::new(&machine.home);
+    let source = Machine::new();
+    source.plugin(".src", &upstream.url(), "version 1\n");
+    let source_dir = source.path(".src");
+    git_ok(
+        &source.home,
+        &["-C", source_dir.to_str().unwrap(), "push", "origin", "main"],
+    );
+
+    let installed = machine.path(".vim/plugged/nifty");
+    fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    git_ok(
+        &machine.home,
+        &["clone", &upstream.url(), installed.to_str().unwrap()],
+    );
+    assert_ok(&machine.dotty(&["init"]));
+    assert_ok(&machine.dotty(&["add", ".vim/plugged/nifty"]));
+
+    assert_ok(&machine.dotty(&["remove", ".vim/plugged/nifty"]));
+
+    assert!(!is_symlink(&installed));
+    assert!(
+        installed.join(".git").exists(),
+        "its history should return with it"
+    );
+    assert_eq!(
+        git_ok(
+            &machine.home,
+            &["-C", installed.to_str().unwrap(), "log", "--format=%s"]
+        ),
+        "initial"
+    );
+
+    let repo = machine.repo();
+    let repo = repo.to_str().unwrap();
+    assert_eq!(git_ok(&machine.home, &["-C", repo, "ls-files"]), "");
+    assert!(
+        !machine.repo().join(".gitmodules").exists(),
+        ".gitmodules should go once the last submodule has"
+    );
+    assert_eq!(
+        git_ok(&machine.home, &["-C", repo, "status", "--porcelain"]),
+        ""
+    );
+}
+
+#[test]
+fn remove_declines_paths_it_does_not_manage() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".not-managed", "mine\n");
+
+    let output = machine.dotty(&["remove", ".not-managed"]);
+
+    assert_ok(&output);
+    assert!(
+        text(&output).contains("not managed by dotty"),
+        "got: {}",
+        text(&output)
+    );
+    assert_eq!(machine.read(".not-managed"), "mine\n");
+}
+
+// Something dotty did not put there is not dotty's to discard.
+#[test]
+fn remove_refuses_when_something_else_occupies_the_place() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".zshrc", "managed\n");
+    assert_ok(&machine.dotty(&["add", ".zshrc"]));
+    fs::remove_file(machine.path(".zshrc")).unwrap();
+    machine.write(".zshrc", "put here by someone else\n");
+
+    let output = machine.dotty(&["remove", machine.repo().join(".zshrc").to_str().unwrap()]);
+
+    assert_ok(&output);
+    assert_eq!(machine.read(".zshrc"), "put here by someone else\n");
+    assert!(
+        machine.repo().join(".zshrc").exists(),
+        "the repository's copy should be kept, not dropped on the floor"
+    );
+    assert_eq!(
+        git_ok(
+            &machine.home,
+            &["-C", machine.repo().to_str().unwrap(), "ls-files"]
+        ),
+        ".zshrc",
+        "it should still be tracked, since nothing was removed"
+    );
+}
+
 // ---------------------------------------------------------------- status
 
 #[test]

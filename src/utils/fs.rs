@@ -232,6 +232,17 @@ pub fn create_overwrite_temp_dir(prefix: &str) -> Result<OverwriteTempDir, Strin
     Ok(OverwriteTempDir { temp_dir })
 }
 
+/// Removes a symlink, leaving whatever it pointed at untouched.
+pub fn remove_symlink(path: &Path) -> Result<(), String> {
+    log::trace!("removing symlink {}", path.display());
+    remove(path)
+}
+
+/// Moves a file or directory to `to`, creating parent directories as needed.
+pub fn move_path(from: &Path, to: &Path) -> Result<(), String> {
+    rename(from, to)
+}
+
 /// Removes an empty directory.
 pub fn remove_dir(dir: &Path) -> Result<(), String> {
     match fs::remove_dir(dir) {
