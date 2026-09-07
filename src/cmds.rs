@@ -236,17 +236,18 @@ fn move_to_dotty_repo(repo: &Path, root: &Path, path: &Path) -> Result<Option<Pa
 /// Builds the commit message for an `add`.
 ///
 /// A single file is named directly; several are summarised by the directory
-/// they share, with the full list in the commit body.
+/// they share, with the full list in the commit body. Files sharing no
+/// directory at all are summarised by count alone.
 fn build_git_message(to_commit: &Vec<PathBuf>) -> String {
     match to_commit.len() {
         0 => String::default(),
         1 => format!("adding {}", to_commit.first().unwrap().display()),
         _ => {
-            let mut msg = format!(
-                "adding {} files to {}\n\n",
-                to_commit.len(),
-                path::common_base_path(to_commit).display()
-            );
+            let base = path::common_base_path(to_commit);
+            let mut msg = match base.as_os_str().is_empty() {
+                true => format!("adding {} files\n\n", to_commit.len()),
+                false => format!("adding {} files to {}\n\n", to_commit.len(), base.display()),
+            };
             for path in to_commit {
                 msg.push_str(&format!("- {}\n", path.display()));
             }
@@ -445,5 +446,15 @@ mod tests {
     #[test]
     fn build_git_message_for_no_files_is_empty() {
         assert_eq!(build_git_message(&vec![]), "");
+    }
+
+    #[test]
+    fn build_git_message_omits_base_path_when_there_is_none() {
+        let paths = vec![PathBuf::from(".zshrc"), PathBuf::from(".config/nvim")];
+        let message = build_git_message(&paths);
+
+        assert!(message.starts_with("adding 2 files\n"));
+        assert!(message.contains("- .zshrc\n"));
+        assert!(message.contains("- .config/nvim\n"));
     }
 }
