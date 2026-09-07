@@ -103,6 +103,94 @@ pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String>
     Ok(())
 }
 
+/// Stops managing the given paths, putting the real files back where the
+/// symlinks were.
+///
+/// The exact inverse of [`add`]: the file moves out of the repository to the
+/// place it was taken from, the symlink goes, and the removal is committed.
+/// Nothing is deleted, so the machine is left as though dotty had never
+/// touched it.
+///
+/// A path that is not managed, or whose place on the machine is occupied by
+/// something dotty did not put there, is reported and skipped rather than
+/// taking the rest of the run with it.
+pub fn remove(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String> {
+    let git_repo = git::open(repo)?;
+    git::check_signature(&git_repo)?;
+
+    let mut removed: Vec<PathBuf> = Vec::new();
+    let mut submodules: Vec<PathBuf> = Vec::new();
+
+    for path in paths {
+        if !path.exists() {
+            log::warn!("skipping {} - it does not exist", path.display());
+            continue;
+        }
+        let canonical = path::canonicalize(path)?;
+
+        // A managed dotfile is a symlink into the repository, so canonicalizing
+        // it lands on the repository's copy whichever of the two the user named.
+        let relative_path = match canonical.strip_prefix(repo) {
+            Ok(relative) => relative.to_owned(),
+            Err(_) => {
+                log::warn!("skipping {} - it is not managed by dotty", path.display());
+                continue;
+            }
+        };
+
+        if !git::is_committed(&git_repo, &relative_path) {
+            log::warn!("skipping {} - it is not tracked", path.display());
+            continue;
+        }
+
+        match move_out_of_dotty_repo(repo, root, &relative_path) {
+            Ok(()) => {
+                if git::is_submodule(&git_repo, &relative_path) {
+                    submodules.push(relative_path.clone());
+                }
+                removed.push(relative_path);
+            }
+            Err(err) => log::warn!("failed to remove {} - {}", path.display(), err),
+        }
+    }
+
+    if removed.is_empty() {
+        return Ok(());
+    }
+
+    git::unstage_all(&git_repo)?;
+
+    // .gitmodules is dotty's bookkeeping rather than one of the user's
+    // dotfiles, so it is staged alongside them but kept out of what gets
+    // reported back.
+    let mut to_unstage = removed.clone();
+    if !submodules.is_empty() {
+        for submodule in &submodules {
+            git::deregister_submodule(&git_repo, submodule)?;
+        }
+        let modules = PathBuf::from(".gitmodules");
+        if git::tidy_gitmodules(&git_repo)? {
+            git::stage_all_paths(&git_repo, &vec![modules])?;
+        } else {
+            to_unstage.push(modules);
+        }
+    }
+
+    git::unstage_paths(&git_repo, &to_unstage)?;
+    git::commit(&git_repo, &build_removal_message(&removed))?;
+
+    println!(
+        "removed {} from {}",
+        if removed.len() == 1 {
+            removed.first().unwrap().display().to_string()
+        } else {
+            format!("{} paths", removed.len())
+        },
+        repo.display()
+    );
+    Ok(())
+}
+
 /// Puts every file the repository tracks back onto the machine.
 ///
 /// This is the other half of [`add`], and the command you run on a new machine
@@ -363,6 +451,45 @@ fn move_to_dotty_repo(
         true => Some(relative_path),
         false => None,
     })
+}
+
+/// Moves a managed file out of the repository, back to where it came from.
+///
+/// The symlink dotty left behind is removed first; anything else sitting in
+/// that place is left alone and reported, since it is not dotty's to discard.
+fn move_out_of_dotty_repo(repo: &Path, root: &Path, relative_path: &Path) -> Result<(), String> {
+    let from = repo.join(relative_path);
+    let to = root.join(relative_path);
+
+    match fs::placement(&from, &to)? {
+        fs::Placement::Linked => fs::remove_symlink(&to)?,
+        fs::Placement::Missing => {}
+        fs::Placement::Copied => {
+            return Err(format!(
+                "{} is a copy rather than a link; remove it by hand if you meant to",
+                to.display()
+            ))
+        }
+        fs::Placement::Conflict(reason) => return Err(format!("{} is {}", to.display(), reason)),
+    }
+
+    log::debug!("moving {} back to {}", from.display(), to.display());
+    fs::move_path(&from, &to)
+}
+
+/// Builds the commit message for a `remove`.
+fn build_removal_message(removed: &Vec<PathBuf>) -> String {
+    match removed.len() {
+        0 => String::default(),
+        1 => format!("removing {}", removed.first().unwrap().display()),
+        _ => {
+            let mut msg = format!("removing {} files\n\n", removed.len());
+            for path in removed {
+                msg.push_str(&format!("- {}\n", path.display()));
+            }
+            msg
+        }
+    }
 }
 
 /// Builds the commit message for an `add`.

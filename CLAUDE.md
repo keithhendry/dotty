@@ -35,7 +35,7 @@ Two things to know before writing tests here:
 
 ## CLI structure
 
-Entry point is [src/main.rs](src/main.rs), using `clap` derive macros. Global options (`-r/--repository`, defaulting to `~/.dotty` or `$DOTTY_REPOSITORY`; `-R/--root`, the directory dotfiles live relative to) are parsed once in `Opts`, resolved to canonical paths, then dispatched to a subcommand handler in [src/cmds.rs](src/cmds.rs). Each subcommand (`init`, `clone`, `add`, `restore`, `sync`, `update`, `status`) is a thin free function in `cmds.rs` that composes helpers from `src/utils/`.
+Entry point is [src/main.rs](src/main.rs), using `clap` derive macros. Global options (`-r/--repository`, defaulting to `~/.dotty` or `$DOTTY_REPOSITORY`; `-R/--root`, the directory dotfiles live relative to) are parsed once in `Opts`, resolved to canonical paths, then dispatched to a subcommand handler in [src/cmds.rs](src/cmds.rs). Each subcommand (`init`, `clone`, `add`, `restore`, `sync`, `update`, `status`, `remove`) is a thin free function in `cmds.rs` that composes helpers from `src/utils/`.
 
 ### Output convention
 
@@ -57,6 +57,7 @@ The `///` comments on the clap structs are rendered as `--help` text, so editing
 Command flow worth understanding before changing `add` or `restore`:
 - `add` walks the given paths (`flatten_paths_to_add` in cmds.rs), treating any directory that is itself a git repo as an opaque unit (added as a submodule) rather than descending into it. Everything else is moved into the dotty repo and symlinked back, then staged and committed in one shot (submodules are added before the rest of the paths are staged).
 - Paths arrive at `move_to_dotty_repo` already canonicalized, so a path that resolves *into* the repository is one dotty already manages — that check is what stops a second `add` of the same file from burying it a level deeper.
+- `remove` is the inverse of `add`: it moves the file back out to where the symlink was, drops it from the index, and commits. Submodules also lose their `.gitmodules` entry, and the file is deleted once the last submodule goes. Nothing is ever destroyed — a place occupied by something dotty did not put there is reported and skipped.
 - `restore` does the inverse over the *dotty repo's* top-level contents (skipping `.git`/`.gitmodules`), and supports both symlink and file-copy modes; `--overwrite` moves conflicting existing files into a temp dir rather than clobbering them.
 - Every fallible operation returns `Result<_, String>` (errors are pre-formatted, human-readable strings) — there's no custom error enum/`thiserror`/`anyhow` in this codebase, so keep new code consistent with that style rather than introducing a new error type.
 - Logging uses the `log`/`simplelog` crates; verbosity is controlled by repeated `-v` flags mapped to log levels in `main.rs`. A failure is logged **and exits non-zero**, so dotty can be scripted.

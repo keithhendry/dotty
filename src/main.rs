@@ -13,7 +13,7 @@ mod cmds;
 mod utils;
 
 use clap::{ArgAction, Parser, ValueEnum};
-use cmds::{add, clone, init, restore, status, sync, update};
+use cmds::{add, clone, init, remove, restore, status, sync, update};
 use simplelog::*;
 use std::path::PathBuf;
 use std::process;
@@ -59,6 +59,8 @@ enum SubCommand {
     Update(Update),
     /// Shows what is tracked and how it stands on this machine
     Status(Status),
+    /// Stops managing files, putting the real files back in their place
+    Remove(Remove),
 }
 
 #[derive(Parser)]
@@ -110,6 +112,13 @@ struct Update {}
 
 #[derive(Parser)]
 struct Status {}
+
+#[derive(Parser)]
+struct Remove {
+    /// The paths to stop managing
+    #[clap()]
+    paths: Vec<PathBuf>,
+}
 
 /// Sets up terminal logging, with `-v` raising the level each time it is given:
 /// warnings by default, then info, debug and trace.
@@ -173,6 +182,7 @@ fn run(opts: &Opts) -> Result<(), String> {
         SubCommand::Sync(sync_cmd) => sync(&repo, sync_cmd.url.as_deref()),
         SubCommand::Update(_) => update(&repo),
         SubCommand::Status(_) => status(&repo, &root),
+        SubCommand::Remove(remove_cmd) => remove(&repo, &root, &remove_cmd.paths),
     }
 }
 

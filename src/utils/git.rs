@@ -305,6 +305,144 @@ pub fn add_submodules(repo: &Repository, submodules: &Vec<PathBuf>) -> Result<()
     Ok(())
 }
 
+/// Removes `paths` from the index, so the next commit no longer tracks them.
+///
+/// Paths are relative to the repository's working directory (see the [module
+/// documentation](self#path-conventions)). The files themselves are left
+/// alone; the caller decides what becomes of them.
+pub fn unstage_paths(repo: &Repository, paths: &Vec<PathBuf>) -> Result<(), String> {
+    git_helper(
+        || {
+            let mut index = repo.index()?;
+            for path in paths {
+                log::trace!("removing {} from the index", path.display());
+                index.remove_all([path], None)?;
+            }
+            index.write()
+        },
+        |err| {
+            format!(
+                "failed to remove {} paths from git repository {} - {}",
+                paths.len(),
+                repo.path().display(),
+                err
+            )
+        },
+    )
+}
+
+/// Whether `path` is registered as a submodule of `repo`.
+pub fn is_submodule(repo: &Repository, path: &Path) -> bool {
+    path.to_str()
+        .map(|name| repo.find_submodule(name).is_ok())
+        .unwrap_or(false)
+}
+
+/// Drops a submodule's section from `.gitmodules`.
+///
+/// The file is git config, so it is edited as config rather than as text. The
+/// entries go; an empty section header may remain, which git tolerates.
+pub fn deregister_submodule(repo: &Repository, path: &Path) -> Result<(), String> {
+    let workdir = match repo.workdir() {
+        Some(workdir) => workdir,
+        None => {
+            return Err(format!(
+                "git repository {} has no working directory",
+                repo.path().display()
+            ))
+        }
+    };
+    let modules = workdir.join(".gitmodules");
+    if !modules.exists() {
+        return Ok(());
+    }
+
+    let name = match path.to_str() {
+        Some(name) => name,
+        None => return Err(format!("submodule path {} is not utf-8", path.display())),
+    };
+
+    git_helper(
+        || {
+            let mut config = Config::open(&modules)?;
+            // Missing keys are not a failure: the point is that they are gone.
+            let _ = config.remove(&format!("submodule.{name}.path"));
+            let _ = config.remove(&format!("submodule.{name}.url"));
+            Ok(())
+        },
+        |err| format!("failed to update {} - {}", modules.display(), err),
+    )
+}
+
+/// Tidies `.gitmodules` after submodules have been deregistered.
+///
+/// Removing a submodule's entries leaves its `[submodule "..."]` header behind
+/// with nothing under it. git tolerates that, but it is litter in the user's
+/// repository, so empty sections are dropped and the file is deleted outright
+/// once it has nothing left to say.
+///
+/// Returns whether the file still exists afterwards.
+pub fn tidy_gitmodules(repo: &Repository) -> Result<bool, String> {
+    let workdir = match repo.workdir() {
+        Some(workdir) => workdir,
+        None => {
+            return Err(format!(
+                "git repository {} has no working directory",
+                repo.path().display()
+            ))
+        }
+    };
+    let modules = workdir.join(".gitmodules");
+    if !modules.exists() {
+        return Ok(false);
+    }
+
+    let contents = fs::read_to_string(&modules)
+        .map_err(|err| format!("failed to read {} - {}", modules.display(), err))?;
+    let kept = drop_empty_sections(&contents);
+
+    if kept.trim().is_empty() {
+        fs::remove_file(&modules)
+            .map_err(|err| format!("failed to remove {} - {}", modules.display(), err))?;
+        return Ok(false);
+    }
+
+    fs::write(&modules, kept)
+        .map_err(|err| format!("failed to write {} - {}", modules.display(), err))?;
+    Ok(true)
+}
+
+/// Drops any `[section]` that has nothing underneath it.
+///
+/// Works on the text rather than through the config API so that keys this
+/// program never writes, on sections it is keeping, survive untouched.
+fn drop_empty_sections(contents: &str) -> String {
+    let lines: Vec<&str> = contents.lines().collect();
+    let mut kept: Vec<&str> = Vec::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        if !line.trim_start().starts_with('[') {
+            kept.push(line);
+            continue;
+        }
+        // Keep the header only if something other than blank lines and further
+        // headers follows it.
+        let has_entries = lines[index + 1..]
+            .iter()
+            .take_while(|next| !next.trim_start().starts_with('['))
+            .any(|next| !next.trim().is_empty());
+        if has_entries {
+            kept.push(line);
+        }
+    }
+
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
 /// Fetches, merges and pushes the current branch, in that order.
 ///
 /// Passing a `url` points `origin` at it, creating or updating the remote as
@@ -937,6 +1075,44 @@ mod tests {
             choose_credential(CredentialType::empty(), &state),
             CredentialAttempt::Exhausted
         );
+    }
+
+    #[test]
+    fn drop_empty_sections_removes_a_header_with_nothing_under_it() {
+        let contents = "[submodule \".vim/nifty\"]\n";
+
+        assert_eq!(drop_empty_sections(contents), "");
+    }
+
+    #[test]
+    fn drop_empty_sections_keeps_sections_that_still_have_entries() {
+        let contents = concat!(
+            "[submodule \"gone\"]\n",
+            "[submodule \"kept\"]\n",
+            "\tpath = kept\n",
+            "\turl = https://example.com/kept.git\n",
+        );
+
+        assert_eq!(
+            drop_empty_sections(contents),
+            concat!(
+                "[submodule \"kept\"]\n",
+                "\tpath = kept\n",
+                "\turl = https://example.com/kept.git\n",
+            )
+        );
+    }
+
+    // Keys this program never writes must survive on a section being kept.
+    #[test]
+    fn drop_empty_sections_leaves_unfamiliar_keys_alone() {
+        let contents = concat!(
+            "[submodule \"kept\"]\n",
+            "\tpath = kept\n",
+            "\tbranch = release\n",
+        );
+
+        assert_eq!(drop_empty_sections(contents), contents);
     }
 
     #[test]

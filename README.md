@@ -99,6 +99,25 @@ From then on, `dotty sync` in either direction is enough to keep them together.
 | `dotty sync [url]` | Fetches, merges and pushes. Pass a URL to set or change `origin`. |
 | `dotty update` | Fast-forwards every submodule to the latest commit on its default branch, and commits the result. |
 | `dotty status` | Shows what the repository tracks and how each file stands on this machine. Changes nothing. |
+| `dotty remove <paths...>` | Stops managing files: moves the real file back where the symlink was, and commits the removal. Nothing is deleted. |
+
+### `dotty remove`
+
+The inverse of `add`. The file moves out of the repository to where the symlink
+was, the symlink goes, and the removal is committed — leaving the machine as
+though dotty had never touched it.
+
+```console
+$ dotty remove ~/.zshrc
+removed .zshrc from ~/.dotty
+
+$ ls -l ~/.zshrc
+-rw-r--r--  1 you  staff  20 Sep  7 11:04 /Users/you/.zshrc    # a real file again
+```
+
+A submodule comes back with its own history and remote intact. Nothing is ever
+deleted: a path dotty doesn't manage, or one whose place is occupied by
+something dotty didn't put there, is reported and skipped.
 
 ### `dotty status`
 
