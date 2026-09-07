@@ -2,7 +2,10 @@ name: Label PR's
 
 on:
   pull_request_target:
-    types: [opened, edited]
+    # synchronize matters because "Label PR" is a required status check: without
+    # it the job never runs for a pushed commit, so the check stays unreported
+    # and the pull request cannot be merged.
+    types: [opened, edited, synchronize]
 
 jobs:
   label:

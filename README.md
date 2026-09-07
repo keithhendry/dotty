@@ -57,8 +57,15 @@ Requires Rust 1.98 or later.
 cargo install --git https://github.com/keithhendry/dotty
 ```
 
-Prebuilt binaries for macOS (Apple silicon and Intel) and Linux (x86-64) are
-also attached to every [release](https://github.com/keithhendry/dotty/releases).
+Prebuilt binaries are attached to every
+[release](https://github.com/keithhendry/dotty/releases), and each one is built
+and tested on the architecture it ships for:
+
+| Platform | Architecture | Asset |
+| --- | --- | --- |
+| macOS | Apple silicon (`arm64`) | `dotty-<version>-darwin-arm64.tar.gz` |
+| macOS | Intel (`amd64`) | `dotty-<version>-darwin-amd64.tar.gz` |
+| Linux | `amd64` | `dotty-<version>-linux-amd64.tar.gz` |
 
 > dotty uses unix symlinks, so macOS and Linux are supported. Windows is not.
 
