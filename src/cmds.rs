@@ -122,12 +122,40 @@ pub fn restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Res
         .map(|x| x.0)
         .collect();
 
+    // One awkward file should not decide the fate of the rest. Failing on the
+    // first one left the machine half configured, with no account of what had
+    // and had not been put in place; `add` has always reported and carried on.
+    let total = paths_to_restore.len();
+    let mut failed = 0;
+
     for from in paths_to_restore {
         let relative_path = path::relative_from_root(repo, &from)?;
         let to = root.join(&relative_path);
         let overwrite_entry = overwrite.as_ref().map(|o| o.entry(&relative_path));
         log::debug!("restoring {} to {}", from.display(), to.display());
-        fs::restore(&from, &to, overwrite_entry.as_deref(), symlinks)?;
+        if let Err(err) = fs::restore(&from, &to, overwrite_entry.as_deref(), symlinks) {
+            log::warn!("{}", err);
+            failed += 1;
+        }
+    }
+
+    if let Some(overwrite) = overwrite.as_ref() {
+        if !fs::is_empty(overwrite.path())? {
+            log::warn!(
+                "files already on this machine were moved to {}",
+                overwrite.path().display()
+            );
+        }
+    }
+
+    if failed > 0 {
+        return Err(format!(
+            "restored {} of {} paths to {}; {} could not be restored",
+            total - failed,
+            total,
+            root.display(),
+            failed
+        ));
     }
 
     log::info!(

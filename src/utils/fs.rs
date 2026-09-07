@@ -77,34 +77,47 @@ pub fn restore(
         log::trace!("{} already exists", to.display());
 
         if metadata.is_symlink() {
-            let resolved_to = match fs::canonicalize(to) {
-                Ok(resolved) => resolved,
-                Err(err) => return Err(format!("failed to resolve {} - {}", from.display(), err)),
-            };
-
-            if resolved_to == from {
-                if symlinks {
-                    log::trace!("{} correctly points to {}", to.display(), from.display());
-                    return Ok(());
-                } else {
+            match fs::canonicalize(to) {
+                Ok(resolved_to) if resolved_to == from => {
+                    if symlinks {
+                        log::trace!("{} correctly points to {}", to.display(), from.display());
+                        return Ok(());
+                    }
                     log::warn!("replacing symlink {} with {}", to.display(), from.display());
                     remove(to)?
                 }
-            } else if overwrite.is_some() {
-                log::warn!(
-                    "removing existing symlink {} to {}",
-                    to.display(),
-                    resolved_to.display()
-                );
-                remove(to)?
-            } else {
-                return Err(format!(
-                    "not overwriting symlink {} to {}",
-                    to.display(),
-                    resolved_to.display()
-                ));
+                Ok(resolved_to) if overwrite.is_some() => {
+                    log::warn!(
+                        "removing existing symlink {} to {}",
+                        to.display(),
+                        resolved_to.display()
+                    );
+                    remove(to)?
+                }
+                Ok(resolved_to) => {
+                    return Err(format!(
+                        "not overwriting symlink {} to {} - pass --overwrite to move it aside",
+                        to.display(),
+                        resolved_to.display()
+                    ));
+                }
+                // A symlink that will not resolve is dangling: it points at
+                // nothing, so replacing it cannot lose anything. Refusing here
+                // used to fail the whole restore, even with --overwrite, on any
+                // machine left holding stale dotfile symlinks.
+                Err(_) => {
+                    log::warn!("replacing broken symlink {}", to.display());
+                    remove(to)?
+                }
             }
         } else {
+            // Copying produces a plain file at `to`, so an identical one is
+            // this command's own earlier output and there is nothing to do.
+            // Without this, `restore --mode files` failed the second time it ran.
+            if !symlinks && same_contents(from, to)? {
+                log::trace!("{} already matches {}", to.display(), from.display());
+                return Ok(());
+            }
             match overwrite {
                 Some(move_existing_to) => {
                     log::warn!(
@@ -114,7 +127,12 @@ pub fn restore(
                     );
                     rename(to, move_existing_to)?;
                 }
-                None => return Err(format!("not overwriting existing file {}", to.display())),
+                None => {
+                    return Err(format!(
+                        "not overwriting existing file {} - pass --overwrite to move it aside",
+                        to.display()
+                    ))
+                }
             }
         }
     }
@@ -146,6 +164,12 @@ impl OverwriteTempDir {
     /// be moved aside to. Creates nothing; it only builds the path.
     pub fn entry(&self, path: &Path) -> PathBuf {
         self.temp_dir.join(path)
+    }
+
+    /// The directory itself, so that callers can tell the user where to look
+    /// for anything that was displaced.
+    pub fn path(&self) -> &Path {
+        &self.temp_dir
     }
 }
 
@@ -201,6 +225,20 @@ pub fn read_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {
         Err(err) => return Err(format!("Failed to read dir {}: {}", dir.display(), err)),
     }
     Ok(paths)
+}
+
+/// Whether two paths are files holding exactly the same bytes.
+///
+/// Directories are never equal for this purpose: a submodule restored as a
+/// directory is not something to compare byte for byte.
+fn same_contents(left: &Path, right: &Path) -> Result<bool, String> {
+    if !left.is_file() || !right.is_file() {
+        return Ok(false);
+    }
+    let read = |path: &Path| {
+        fs::read(path).map_err(|err| format!("failed to read {} - {}", path.display(), err))
+    };
+    Ok(read(left)? == read(right)?)
 }
 
 fn rename(from: &Path, to: &Path) -> Result<(), String> {
