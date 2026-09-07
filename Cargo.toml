@@ -13,7 +13,6 @@ clap = { version = "4.6.6", features = ["derive", "env"] }
 # enable `cred`, which backs authentication via the user's git credential
 # helper. They are NOT enabled by default as of git2 0.21.
 git2 = { version = "0.21.0", features = ["https", "ssh"] }
-home-dir = "0.1.0"
 log = "0.4.34"
 rand = "0.10.2"
 simplelog = { version = "0.12.2", features = ["paris"] }
