@@ -219,6 +219,15 @@ fn flatten_paths_to_add(paths: &Vec<PathBuf>) -> Result<Vec<(PathBuf, PathType)>
 /// Returns the path relative to the root — the form everything downstream
 /// wants — or `None` when the file was already managed and nothing moved.
 fn move_to_dotty_repo(repo: &Path, root: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
+    // `path` arrives canonicalized, so anything inside the repository is
+    // already managed: adding a file a second time follows the symlink left by
+    // the first add straight back here. Moving it again would bury it one level
+    // deeper on every run.
+    if path.starts_with(repo) {
+        log::debug!("{} is already in the repository", path.display());
+        return Ok(None);
+    }
+
     let relative_path = path::relative_from_root(root, path)?;
     let to = repo.join(&relative_path);
 
@@ -364,6 +373,37 @@ mod tests {
         assert_eq!(
             std::fs::read_link(&plugin_dir).unwrap(),
             repo_dir.join(".vim/plugged/foo")
+        );
+    }
+
+    // Adding a file that is already managed used to follow the symlink from the
+    // first add back into the repository and move the file a level deeper,
+    // leaving a nested .dotty/.dotty tracked in git.
+    #[test]
+    fn add_leaves_an_already_managed_file_where_it_is() {
+        let (_dir, dir) = canonical_tempdir();
+        let repo_dir = dir.join("repo");
+        let root_dir = dir.join("root");
+        std::fs::create_dir_all(&root_dir).unwrap();
+        init(&repo_dir).unwrap();
+        configure_signature(&repo_dir);
+        let vimrc = root_dir.join(".vimrc");
+        std::fs::write(&vimrc, "content").unwrap();
+        add(&repo_dir, &root_dir, &vec![vimrc.clone()]).unwrap();
+
+        add(&repo_dir, &root_dir, &vec![vimrc.clone()]).unwrap();
+
+        assert_eq!(std::fs::read_link(&vimrc).unwrap(), repo_dir.join(".vimrc"));
+        assert!(
+            !repo_dir.join("repo").exists(),
+            "the repository should not contain a copy of itself"
+        );
+        let git_repo = git::open(&repo_dir).unwrap();
+        let head = git_repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(
+            head.parent_count(),
+            0,
+            "the second add had nothing to do, so it should not have committed"
         );
     }
 
