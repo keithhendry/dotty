@@ -178,9 +178,22 @@ pub fn add_submodules(repo: &Repository, submodules: &Vec<PathBuf>) -> Result<()
         submodules.len(),
         repo.path().display()
     );
+    let workdir = match repo.workdir() {
+        Some(workdir) => workdir,
+        None => {
+            return Err(format!(
+                "git repository {} has no working directory",
+                repo.path().display()
+            ))
+        }
+    };
     for path in submodules {
         log::trace!("adding submodule {}", path.display());
-        let submodule_repo = open(path)?;
+        // `path` is relative to the repo's working directory (as required by
+        // `Repository::submodule` below), so it must be resolved against that
+        // directory rather than opened as-is, which would instead resolve
+        // relative to the current process's working directory.
+        let submodule_repo = open(&workdir.join(path))?;
         let url = get_origin_url(&submodule_repo)?;
         if let Err(err) = repo
             .submodule(&url, path, true)
@@ -565,4 +578,246 @@ fn update_submodules_recursive(
         add_subrepos(&repo, &mut repos, init, opts)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::{tempdir, TempDir};
+
+    // tempfile's TempDir path can itself sit behind a symlink (e.g. macOS's
+    // /var -> /private/var), which breaks index/staging calls that require
+    // paths relative to the repo's (canonical) workdir. Real callers always
+    // canonicalize `repo`/`root` up front (see main.rs), so tests mirror that.
+    fn canonical_tempdir() -> (TempDir, PathBuf) {
+        let dir = tempdir().unwrap();
+        let path = dir.path().canonicalize().unwrap();
+        (dir, path)
+    }
+
+    fn configure_signature(repo: &Repository) {
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test User").unwrap();
+        config.set_str("user.email", "test@example.com").unwrap();
+    }
+
+    // stage_all_paths (like the real add/update command flows) is always called
+    // with paths relative to the repo's workdir, never absolute ones.
+    fn commit_file(repo: &Repository, dir: &Path, name: &str, contents: &str, message: &str) {
+        fs::write(dir.join(name), contents).unwrap();
+        stage_all_paths(repo, &vec![PathBuf::from(name)]).unwrap();
+        commit(repo, message).unwrap();
+    }
+
+    #[test]
+    fn init_or_open_creates_new_repository() {
+        let (_dir, dir) = canonical_tempdir();
+
+        init_or_open(&dir).unwrap();
+
+        assert!(dir.join(".git").exists());
+    }
+
+    #[test]
+    fn init_or_open_opens_an_existing_repository() {
+        let (_dir, dir) = canonical_tempdir();
+        init_or_open(&dir).unwrap();
+
+        let repo = init_or_open(&dir).unwrap();
+
+        assert_eq!(repo.path(), Repository::open(&dir).unwrap().path());
+    }
+
+    #[test]
+    fn open_fails_for_a_non_repository() {
+        let (_dir, dir) = canonical_tempdir();
+        assert!(open(&dir).is_err());
+    }
+
+    #[test]
+    fn check_open_detects_git_repositories() {
+        let (_dir, dir) = canonical_tempdir();
+        assert!(!check_open(&dir));
+
+        init_or_open(&dir).unwrap();
+
+        assert!(check_open(&dir));
+    }
+
+    #[test]
+    fn stage_commit_and_unstage_round_trip() {
+        let (_dir, dir) = canonical_tempdir();
+        let repo = init_or_open(&dir).unwrap();
+        configure_signature(&repo);
+
+        commit_file(&repo, &dir, "file.txt", "hello", "add file.txt");
+
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head_commit.message().unwrap(), "add file.txt");
+        assert_eq!(fs::read_to_string(dir.join("file.txt")).unwrap(), "hello");
+
+        fs::write(dir.join("file2.txt"), "world").unwrap();
+        stage_all_paths(&repo, &vec![PathBuf::from("file2.txt")]).unwrap();
+        unstage_all(&repo).unwrap();
+
+        let statuses = repo.statuses(None).unwrap();
+        assert!(statuses
+            .iter()
+            .any(|s| s.path() == Some("file2.txt") && s.status().is_wt_new()));
+        assert_eq!(
+            repo.head().unwrap().peel_to_commit().unwrap().id(),
+            head_commit.id()
+        );
+    }
+
+    // `add_submodules` is always called (by cmds::add) with paths relative to
+    // the parent repo's workdir, and the submodule's own git repo has already
+    // been placed at that location inside the parent repo's tree - mirror that
+    // layout here rather than a sibling directory.
+    #[test]
+    fn add_submodules_registers_submodule_from_its_origin_remote() {
+        let (_root, root) = canonical_tempdir();
+
+        let repo_dir = root.join("repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+        let repo = init_or_open(&repo_dir).unwrap();
+        configure_signature(&repo);
+
+        let sub_dir = repo_dir.join("sub");
+        fs::create_dir_all(&sub_dir).unwrap();
+        let sub_repo = init_or_open(&sub_dir).unwrap();
+        configure_signature(&sub_repo);
+        commit_file(&sub_repo, &sub_dir, "plugin.vim", "\" plugin", "initial");
+        let origin_url = format!("file://{}", sub_dir.display());
+        sub_repo.remote("origin", &origin_url).unwrap();
+
+        add_submodules(&repo, &vec![PathBuf::from("sub")]).unwrap();
+
+        let gitmodules = fs::read_to_string(repo_dir.join(".gitmodules")).unwrap();
+        assert!(gitmodules.contains(&origin_url));
+    }
+
+    #[test]
+    fn add_submodules_errors_when_submodule_has_no_origin_remote() {
+        let (_root, root) = canonical_tempdir();
+
+        let repo_dir = root.join("repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+        let repo = init_or_open(&repo_dir).unwrap();
+        configure_signature(&repo);
+
+        let sub_dir = repo_dir.join("sub");
+        fs::create_dir_all(&sub_dir).unwrap();
+        let sub_repo = init_or_open(&sub_dir).unwrap();
+        configure_signature(&sub_repo);
+        commit_file(&sub_repo, &sub_dir, "plugin.vim", "\" plugin", "initial");
+
+        let err = add_submodules(&repo, &vec![PathBuf::from("sub")]).unwrap_err();
+        assert!(err.contains("failed to get remotes"));
+    }
+
+    #[test]
+    fn sync_pushes_new_commits_to_a_fresh_remote() {
+        let (_root, root) = canonical_tempdir();
+
+        let remote_dir = root.join("remote");
+        Repository::init_bare(&remote_dir).unwrap();
+
+        let local_dir = root.join("local");
+        fs::create_dir_all(&local_dir).unwrap();
+        let local_repo = init_or_open(&local_dir).unwrap();
+        configure_signature(&local_repo);
+        commit_file(&local_repo, &local_dir, "file.txt", "hello", "initial");
+
+        sync(
+            &local_repo,
+            Some(&format!("file://{}", remote_dir.display())),
+        )
+        .unwrap();
+
+        let remote_repo = Repository::open_bare(&remote_dir).unwrap();
+        let branch = get_branch_name(&local_repo).unwrap();
+        let remote_commit = remote_repo
+            .find_reference(&format!("refs/heads/{}", branch))
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        assert_eq!(remote_commit.message().unwrap(), "initial");
+    }
+
+    #[test]
+    fn sync_fast_forwards_local_from_remote() {
+        let (_root, root) = canonical_tempdir();
+
+        let remote_dir = root.join("remote");
+        Repository::init_bare(&remote_dir).unwrap();
+
+        let seed_dir = root.join("seed");
+        fs::create_dir_all(&seed_dir).unwrap();
+        let seed_repo = init_or_open(&seed_dir).unwrap();
+        configure_signature(&seed_repo);
+        commit_file(&seed_repo, &seed_dir, "file.txt", "hello", "initial");
+        sync(
+            &seed_repo,
+            Some(&format!("file://{}", remote_dir.display())),
+        )
+        .unwrap();
+
+        let local_dir = root.join("local");
+        let local_repo =
+            clone_recurse(&local_dir, &format!("file://{}", remote_dir.display())).unwrap();
+        configure_signature(&local_repo);
+
+        commit_file(&seed_repo, &seed_dir, "file2.txt", "world", "second");
+        sync(&seed_repo, None).unwrap();
+
+        sync(&local_repo, None).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(local_dir.join("file2.txt")).unwrap(),
+            "world"
+        );
+    }
+
+    #[test]
+    fn update_submodules_fast_forwards_to_remote_default_branch() {
+        let (_root, root) = canonical_tempdir();
+
+        let sub_remote_dir = root.join("sub-remote");
+        Repository::init_bare(&sub_remote_dir).unwrap();
+
+        let sub_seed_dir = root.join("sub-seed");
+        fs::create_dir_all(&sub_seed_dir).unwrap();
+        let sub_seed_repo = init_or_open(&sub_seed_dir).unwrap();
+        configure_signature(&sub_seed_repo);
+        commit_file(&sub_seed_repo, &sub_seed_dir, "plugin.vim", "v1", "initial");
+        sync(
+            &sub_seed_repo,
+            Some(&format!("file://{}", sub_remote_dir.display())),
+        )
+        .unwrap();
+
+        let sub_dir = root.join("repo/sub");
+        let sub_repo =
+            clone_recurse(&sub_dir, &format!("file://{}", sub_remote_dir.display())).unwrap();
+        configure_signature(&sub_repo);
+
+        let repo_dir = root.join("repo");
+        let repo = init_or_open(&repo_dir).unwrap();
+        configure_signature(&repo);
+        add_submodules(&repo, &vec![PathBuf::from("sub")]).unwrap();
+        stage_all_paths(&repo, &vec![PathBuf::from("sub")]).unwrap();
+        commit(&repo, "add submodule").unwrap();
+
+        commit_file(&sub_seed_repo, &sub_seed_dir, "plugin.vim", "v2", "update");
+        sync(&sub_seed_repo, None).unwrap();
+
+        let updated = update_submodules(&repo).unwrap();
+
+        assert_eq!(updated, 1);
+        assert_eq!(
+            fs::read_to_string(sub_dir.join("plugin.vim")).unwrap(),
+            "v2"
+        );
+    }
 }

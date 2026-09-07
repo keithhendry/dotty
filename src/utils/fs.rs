@@ -248,3 +248,255 @@ fn remove(path: &Path) -> Result<(), String> {
         Err(err) => Err(format!("unable to delete {} - {}", path.display(), err)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::{tempdir, TempDir};
+
+    // tempfile's TempDir path can itself sit behind a symlink (e.g. macOS's
+    // /var -> /private/var), which breaks == comparisons against
+    // fs::canonicalize() output. Real callers always canonicalize `repo`/`root`
+    // up front (see main.rs), so tests mirror that instead of using raw paths.
+    fn canonical_tempdir() -> (TempDir, PathBuf) {
+        let dir = tempdir().unwrap();
+        let path = dir.path().canonicalize().unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn move_then_symlink_moves_file_and_links_back() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("original/.vimrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "content").unwrap();
+        let to = dir.join("repo/.vimrc");
+
+        let moved = move_then_symlink(&from, &to).unwrap();
+
+        assert!(moved);
+        assert_eq!(fs::read_to_string(&to).unwrap(), "content");
+        assert_eq!(fs::read_link(&from).unwrap(), to);
+    }
+
+    #[test]
+    fn move_then_symlink_is_noop_if_already_linked() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("original/.vimrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "content").unwrap();
+        let to = dir.join("repo/.vimrc");
+        assert!(move_then_symlink(&from, &to).unwrap());
+
+        assert!(!move_then_symlink(&from, &to).unwrap());
+    }
+
+    #[test]
+    fn move_then_symlink_errors_if_destination_exists() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join(".vimrc");
+        fs::write(&from, "content").unwrap();
+        let to = dir.join("repo/.vimrc");
+        fs::create_dir_all(to.parent().unwrap()).unwrap();
+        fs::write(&to, "other content").unwrap();
+
+        assert!(move_then_symlink(&from, &to).is_err());
+    }
+
+    #[test]
+    fn restore_creates_symlink() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.vimrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "content").unwrap();
+        let to = dir.join("root/.vimrc");
+
+        restore(&from, &to, None, true).unwrap();
+
+        assert_eq!(fs::read_link(&to).unwrap(), from);
+    }
+
+    #[test]
+    fn restore_copies_file_when_not_symlinks() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.vimrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "content").unwrap();
+        let to = dir.join("root/.vimrc");
+
+        restore(&from, &to, None, false).unwrap();
+
+        assert!(!symlink_metadata(&to).unwrap().unwrap().is_symlink());
+        assert_eq!(fs::read_to_string(&to).unwrap(), "content");
+    }
+
+    #[test]
+    fn restore_copies_directories_recursively() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.config/app");
+        fs::create_dir_all(&from).unwrap();
+        fs::write(from.join("settings.toml"), "content").unwrap();
+        let to = dir.join("root/.config/app");
+
+        restore(&from, &to, None, false).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(to.join("settings.toml")).unwrap(),
+            "content"
+        );
+    }
+
+    #[test]
+    fn restore_errors_when_source_missing() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.vimrc");
+        let to = dir.join("root/.vimrc");
+
+        assert!(restore(&from, &to, None, true).is_err());
+    }
+
+    #[test]
+    fn restore_is_noop_when_already_correctly_linked() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.vimrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "content").unwrap();
+        let to = dir.join("root/.vimrc");
+        restore(&from, &to, None, true).unwrap();
+
+        restore(&from, &to, None, true).unwrap();
+
+        assert_eq!(fs::read_link(&to).unwrap(), from);
+    }
+
+    #[test]
+    fn restore_replaces_stale_symlink_when_not_using_symlink_mode() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.vimrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "content").unwrap();
+        let to = dir.join("root/.vimrc");
+        restore(&from, &to, None, true).unwrap();
+
+        restore(&from, &to, None, false).unwrap();
+
+        assert!(!symlink_metadata(&to).unwrap().unwrap().is_symlink());
+        assert_eq!(fs::read_to_string(&to).unwrap(), "content");
+    }
+
+    #[test]
+    fn restore_errors_on_conflicting_symlink_without_overwrite() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.vimrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "content").unwrap();
+        let to = dir.join("root/.vimrc");
+        fs::create_dir_all(to.parent().unwrap()).unwrap();
+        let elsewhere = dir.join("elsewhere");
+        fs::write(&elsewhere, "other").unwrap();
+        symlink(&elsewhere, &to).unwrap();
+
+        assert!(restore(&from, &to, None, true).is_err());
+    }
+
+    #[test]
+    fn restore_replaces_conflicting_symlink_with_overwrite() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.vimrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "content").unwrap();
+        let to = dir.join("root/.vimrc");
+        fs::create_dir_all(to.parent().unwrap()).unwrap();
+        let elsewhere = dir.join("elsewhere");
+        fs::write(&elsewhere, "other").unwrap();
+        symlink(&elsewhere, &to).unwrap();
+
+        restore(&from, &to, Some(&dir.join("stash/.vimrc")), true).unwrap();
+
+        assert_eq!(fs::read_link(&to).unwrap(), from);
+    }
+
+    #[test]
+    fn restore_errors_on_existing_file_without_overwrite() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.vimrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "content").unwrap();
+        let to = dir.join("root/.vimrc");
+        fs::create_dir_all(to.parent().unwrap()).unwrap();
+        fs::write(&to, "existing").unwrap();
+
+        assert!(restore(&from, &to, None, true).is_err());
+    }
+
+    #[test]
+    fn restore_moves_existing_file_aside_with_overwrite() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.vimrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "content").unwrap();
+        let to = dir.join("root/.vimrc");
+        fs::create_dir_all(to.parent().unwrap()).unwrap();
+        fs::write(&to, "existing").unwrap();
+        let moved_aside = dir.join("stash/.vimrc");
+
+        restore(&from, &to, Some(&moved_aside), true).unwrap();
+
+        assert_eq!(fs::read_link(&to).unwrap(), from);
+        assert_eq!(fs::read_to_string(&moved_aside).unwrap(), "existing");
+    }
+
+    #[test]
+    fn read_dir_lists_entries() {
+        let (_dir, dir) = canonical_tempdir();
+        fs::write(dir.join("a"), "").unwrap();
+        fs::write(dir.join("b"), "").unwrap();
+
+        let mut entries = read_dir(&dir).unwrap();
+        entries.sort();
+
+        assert_eq!(entries, vec![dir.join("a"), dir.join("b")]);
+    }
+
+    #[test]
+    fn read_dir_errors_for_missing_dir() {
+        let (_dir, dir) = canonical_tempdir();
+        assert!(read_dir(&dir.join("missing")).is_err());
+    }
+
+    #[test]
+    fn is_empty_reports_correctly() {
+        let (_dir, dir) = canonical_tempdir();
+        assert!(is_empty(&dir).unwrap());
+        fs::write(dir.join("a"), "").unwrap();
+        assert!(!is_empty(&dir).unwrap());
+    }
+
+    #[test]
+    fn overwrite_temp_dir_is_removed_when_empty_on_drop() {
+        let temp_dir_path;
+        {
+            let overwrite = create_overwrite_temp_dir("dotty-test-").unwrap();
+            temp_dir_path = overwrite
+                .entry(Path::new("marker"))
+                .parent()
+                .unwrap()
+                .to_owned();
+            assert!(temp_dir_path.exists());
+        }
+        assert!(!temp_dir_path.exists());
+    }
+
+    #[test]
+    fn overwrite_temp_dir_is_kept_when_not_empty_on_drop() {
+        let temp_dir_path;
+        {
+            let overwrite = create_overwrite_temp_dir("dotty-test-").unwrap();
+            let entry = overwrite.entry(Path::new("file"));
+            fs::write(&entry, "content").unwrap();
+            temp_dir_path = entry.parent().unwrap().to_owned();
+        }
+        assert!(temp_dir_path.exists());
+        fs::remove_dir_all(&temp_dir_path).unwrap();
+    }
+}
