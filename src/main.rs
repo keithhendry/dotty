@@ -140,7 +140,9 @@ fn init_logger(opts: &Opts) {
         .set_time_level(log::LevelFilter::Off)
         .build();
 
-    if let Err(err) = TermLogger::init(level, config, TerminalMode::Mixed, ColorChoice::Auto) {
+    // Everything the logger emits is diagnostics, so it all goes to stderr and
+    // leaves stdout carrying only what a command actually produced.
+    if let Err(err) = TermLogger::init(level, config, TerminalMode::Stderr, ColorChoice::Auto) {
         panic!("failed to initialize logger - {}", err);
     }
 }

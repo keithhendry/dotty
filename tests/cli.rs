@@ -500,12 +500,13 @@ fn restore_with_overwrite_moves_the_existing_file_aside() {
     );
 
     // The displaced file is reported rather than deleted, so it can be recovered.
-    let moved_to = text(&output)
+    let holding_dir = text(&output)
         .lines()
-        .find_map(|line| line.split(" to ").nth(1).map(str::to_owned))
-        .expect("expected the log to say where the file was moved");
+        .find_map(|line| line.strip_prefix("files already on this machine were moved to "))
+        .map(|dir| PathBuf::from(dir.trim()))
+        .expect("restore should say where it put the files it displaced");
     assert_eq!(
-        fs::read_to_string(moved_to.trim()).unwrap(),
+        fs::read_to_string(holding_dir.join(".zshrc")).unwrap(),
         "already here\n"
     );
 }

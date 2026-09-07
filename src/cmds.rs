@@ -14,10 +14,7 @@ use std::path::{Path, PathBuf};
 pub fn init(repo: &Path) -> Result<(), String> {
     git::init_or_open(repo)?;
 
-    log::info!(
-        "successfully initialized dotty repository {}",
-        repo.display()
-    );
+    println!("initialized dotty repository {}", repo.display());
     Ok(())
 }
 
@@ -28,11 +25,7 @@ pub fn init(repo: &Path) -> Result<(), String> {
 pub fn clone(repo: &Path, url: &str) -> Result<(), String> {
     git::clone_recurse(repo, url)?;
     // Check that it is a valid dotty repository
-    log::info!(
-        "successfully cloned dotty repository {} from {}",
-        repo.display(),
-        url,
-    );
+    println!("cloned {} into {}", url, repo.display());
     Ok(())
 }
 
@@ -96,8 +89,8 @@ pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String>
         git::stage_all_paths(&git_repo, &to_commit)?;
         git::commit(&git_repo, &build_git_message(&to_commit))?;
 
-        log::info!(
-            "successfully added {} to dotty repository {}",
+        println!(
+            "added {} to {}",
             if to_commit.len() == 1 {
                 to_commit.first().unwrap().display().to_string()
             } else {
@@ -165,9 +158,9 @@ pub fn restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Res
         ));
     }
 
-    log::info!(
-        "successfully restored dotty repository {} to {}, by {}",
-        repo.display(),
+    println!(
+        "restored {} paths to {} by {}",
+        total,
         root.display(),
         match symlinks {
             true => "creating symlinks",
@@ -234,7 +227,7 @@ pub fn status(repo: &Path, root: &Path) -> Result<(), String> {
 pub fn sync(repo: &Path, url: Option<&str>) -> Result<(), String> {
     let git_repo = git::open(repo)?;
     git::sync(&git_repo, url)?;
-    log::info!("successfully synced dotty repository");
+    println!("synced {}", repo.display());
     Ok(())
 }
 
@@ -253,11 +246,11 @@ pub fn update(repo: &Path) -> Result<(), String> {
     // actually moved, wrote an empty commit on every run.
     if outcome.changed > 0 {
         git::commit(&git_repo, "Updated all submodules")?;
-        log::info!("successfully updated {} submodules", outcome.changed);
+        println!("updated {} submodules", outcome.changed);
     } else if outcome.total > 0 {
-        log::info!("all {} submodules are already up to date", outcome.total);
+        println!("all {} submodules are already up to date", outcome.total);
     } else {
-        log::warn!("there are no submodules to update");
+        println!("there are no submodules to update");
     }
 
     Ok(())
