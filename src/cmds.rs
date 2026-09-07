@@ -41,7 +41,7 @@ pub fn clone(repo: &Path, url: &str) -> Result<(), String> {
 /// A path that is already managed is skipped, and a path that cannot be added
 /// is logged and stepped over rather than aborting the whole run. Everything
 /// that did move lands in a single commit.
-pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String> {
+pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>, dry_run: bool) -> Result<(), String> {
     let flattened = flatten_paths_to_add(paths)?;
 
     // Everything past this point rearranges real files, so whatever can be
@@ -66,6 +66,18 @@ pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String>
             }
         }
 
+        if dry_run {
+            match plan_for_add(&git_repo, repo, root, &path) {
+                Ok(Some(relative_path)) => {
+                    println!("would add {}", relative_path.display());
+                    to_commit.push(relative_path);
+                }
+                Ok(None) => log::debug!("{} is already managed", path.display()),
+                Err(err) => log::warn!("would skip {} - {}", path.display(), err),
+            }
+            continue;
+        }
+
         match move_to_dotty_repo(&git_repo, repo, root, &path) {
             Ok(Some(relative_path)) => {
                 if path_type == PathType::GitRepo {
@@ -83,6 +95,14 @@ pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String>
         }
     }
 
+    if dry_run {
+        println!(
+            "{} would be added; nothing was changed",
+            path_count(to_commit.len())
+        );
+        return Ok(());
+    }
+
     if !to_commit.is_empty() {
         git::unstage_all(&git_repo)?;
         git::add_submodules(&git_repo, &submodules)?;
@@ -94,7 +114,7 @@ pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String>
             if to_commit.len() == 1 {
                 to_commit.first().unwrap().display().to_string()
             } else {
-                format!("{} paths", to_commit.len())
+                path_count(to_commit.len())
             },
             repo.display()
         );
@@ -114,7 +134,7 @@ pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String>
 /// A path that is not managed, or whose place on the machine is occupied by
 /// something dotty did not put there, is reported and skipped rather than
 /// taking the rest of the run with it.
-pub fn remove(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String> {
+pub fn remove(repo: &Path, root: &Path, paths: &Vec<PathBuf>, dry_run: bool) -> Result<(), String> {
     let git_repo = git::open(repo)?;
     git::check_signature(&git_repo)?;
 
@@ -143,6 +163,26 @@ pub fn remove(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), Stri
             continue;
         }
 
+        if dry_run {
+            match fs::placement(&repo.join(&relative_path), &root.join(&relative_path))? {
+                fs::Placement::Linked | fs::Placement::Missing => {
+                    println!("would remove {}", relative_path.display());
+                    removed.push(relative_path);
+                }
+                fs::Placement::Copied => log::warn!(
+                    "would skip {} - it is a copy rather than a link",
+                    relative_path.display()
+                ),
+                fs::Placement::Conflict(reason) => log::warn!(
+                    "would skip {} - {} is {}",
+                    relative_path.display(),
+                    root.join(&relative_path).display(),
+                    reason
+                ),
+            }
+            continue;
+        }
+
         match move_out_of_dotty_repo(repo, root, &relative_path) {
             Ok(()) => {
                 if git::is_submodule(&git_repo, &relative_path) {
@@ -152,6 +192,14 @@ pub fn remove(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), Stri
             }
             Err(err) => log::warn!("failed to remove {} - {}", path.display(), err),
         }
+    }
+
+    if dry_run {
+        println!(
+            "{} would be removed; nothing was changed",
+            path_count(removed.len())
+        );
+        return Ok(());
     }
 
     if removed.is_empty() {
@@ -184,7 +232,7 @@ pub fn remove(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), Stri
         if removed.len() == 1 {
             removed.first().unwrap().display().to_string()
         } else {
-            format!("{} paths", removed.len())
+            path_count(removed.len())
         },
         repo.display()
     );
@@ -202,9 +250,19 @@ pub fn remove(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), Stri
 /// `overwrite` decides what happens to files already on the machine: with it,
 /// they are moved into a temporary directory that is reported in the logs;
 /// without it, a conflict is an error and nothing is touched.
-pub fn restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Result<(), String> {
+pub fn restore(
+    repo: &Path,
+    root: &Path,
+    symlinks: bool,
+    overwrite: bool,
+    dry_run: bool,
+) -> Result<(), String> {
+    if dry_run {
+        return plan_restore(repo, root, symlinks, overwrite);
+    }
+
     let overwrite = match overwrite {
-        true => Some(fs::create_overwrite_temp_dir("dotty-")?),
+        true => Some(fs::create_backup_dir(root)?),
         false => None,
     };
 
@@ -247,8 +305,8 @@ pub fn restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Res
     }
 
     println!(
-        "restored {} paths to {} by {}",
-        total,
+        "restored {} to {} by {}",
+        path_count(total),
         root.display(),
         match symlinks {
             true => "creating symlinks",
@@ -365,6 +423,14 @@ fn repository_contents(repo: &Path) -> Result<Vec<PathBuf>, String> {
         .collect())
 }
 
+/// "1 path" but "2 paths", so the reports read like English.
+fn path_count(count: usize) -> String {
+    match count {
+        1 => "1 path".to_owned(),
+        other => format!("{other} paths"),
+    }
+}
+
 /// What a path turned out to be, which decides how it gets tracked.
 #[derive(PartialEq)]
 enum PathType {
@@ -406,6 +472,86 @@ fn flatten_paths_to_add(paths: &Vec<PathBuf>) -> Result<Vec<(PathBuf, PathType)>
     }
 
     Ok(flattened)
+}
+
+/// Works out what [`add`] would do with one path, without touching anything.
+///
+/// Mirrors the checks [`move_to_dotty_repo`] makes, so that a dry run answers
+/// the same questions the real run will.
+fn plan_for_add(
+    git_repo: &git2::Repository,
+    repo: &Path,
+    root: &Path,
+    path: &Path,
+) -> Result<Option<PathBuf>, String> {
+    if path.starts_with(repo) {
+        let relative_path = path::relative_from_root(repo, path)?;
+        if git::is_committed(git_repo, &relative_path) {
+            return Ok(None);
+        }
+        return Ok(Some(relative_path));
+    }
+
+    let relative_path = path::relative_from_root(root, path)?;
+    let destination = repo.join(&relative_path);
+    if destination.exists() {
+        return Err(format!(
+            "{} already exists in the repository",
+            destination.display()
+        ));
+    }
+    Ok(Some(relative_path))
+}
+
+/// Reports what [`restore`] would put in place, without putting it there.
+fn plan_restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Result<(), String> {
+    let mut planned = 0;
+    let mut blocked = 0;
+
+    for from in repository_contents(repo)? {
+        let relative_path = path::relative_from_root(repo, &from)?;
+        let to = root.join(&relative_path);
+
+        match fs::placement(&from, &to)? {
+            // Already correct in symlink mode; in copy mode it would be rewritten.
+            fs::Placement::Linked if symlinks => {
+                log::debug!("{} is already in place", relative_path.display())
+            }
+            fs::Placement::Copied if !symlinks => {
+                log::debug!("{} is already in place", relative_path.display())
+            }
+            fs::Placement::Missing | fs::Placement::Linked | fs::Placement::Copied => {
+                planned += 1;
+                println!("would restore {}", relative_path.display());
+            }
+            fs::Placement::Conflict(reason) => {
+                if overwrite {
+                    planned += 1;
+                    println!(
+                        "would restore {}, moving aside {} ({})",
+                        relative_path.display(),
+                        to.display(),
+                        reason
+                    );
+                } else {
+                    blocked += 1;
+                    log::warn!(
+                        "would skip {} - {} is {}; pass --overwrite to move it aside",
+                        relative_path.display(),
+                        to.display(),
+                        reason
+                    );
+                }
+            }
+        }
+    }
+
+    println!(
+        "{} would be restored, {} blocked; nothing was changed",
+        path_count(planned),
+        blocked
+    );
+    Ok(())
 }
 
 /// Moves one path into the repository and symlinks it back.
@@ -559,7 +705,7 @@ mod tests {
         let vimrc = root_dir.join(".vimrc");
         std::fs::write(&vimrc, "content").unwrap();
 
-        add(&repo_dir, &root_dir, &vec![vimrc.clone()]).unwrap();
+        add(&repo_dir, &root_dir, &vec![vimrc.clone()], false).unwrap();
 
         assert_eq!(std::fs::read_link(&vimrc).unwrap(), repo_dir.join(".vimrc"));
         assert_eq!(
@@ -583,7 +729,7 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(nested.join("settings.toml"), "content").unwrap();
 
-        add(&repo_dir, &root_dir, &vec![root_dir.join(".config")]).unwrap();
+        add(&repo_dir, &root_dir, &vec![root_dir.join(".config")], false).unwrap();
 
         let repo_file = repo_dir.join(".config/app/settings.toml");
         assert_eq!(std::fs::read_to_string(&repo_file).unwrap(), "content");
@@ -617,7 +763,7 @@ mod tests {
             .remote("origin", &format!("file://{}", plugin_dir.display()))
             .unwrap();
 
-        add(&repo_dir, &root_dir, &vec![plugin_dir.clone()]).unwrap();
+        add(&repo_dir, &root_dir, &vec![plugin_dir.clone()], false).unwrap();
 
         assert!(repo_dir.join(".gitmodules").exists());
         assert_eq!(
@@ -639,9 +785,9 @@ mod tests {
         configure_signature(&repo_dir);
         let vimrc = root_dir.join(".vimrc");
         std::fs::write(&vimrc, "content").unwrap();
-        add(&repo_dir, &root_dir, &vec![vimrc.clone()]).unwrap();
+        add(&repo_dir, &root_dir, &vec![vimrc.clone()], false).unwrap();
 
-        add(&repo_dir, &root_dir, &vec![vimrc.clone()]).unwrap();
+        add(&repo_dir, &root_dir, &vec![vimrc.clone()], false).unwrap();
 
         assert_eq!(std::fs::read_link(&vimrc).unwrap(), repo_dir.join(".vimrc"));
         assert!(
@@ -666,7 +812,7 @@ mod tests {
         std::fs::create_dir_all(repo_dir.join(".config")).unwrap();
         std::fs::write(repo_dir.join(".config/app.toml"), "content").unwrap();
 
-        restore(&repo_dir, &root_dir, true, false).unwrap();
+        restore(&repo_dir, &root_dir, true, false, false).unwrap();
 
         assert_eq!(
             std::fs::read_link(root_dir.join(".config/app.toml")).unwrap(),
@@ -684,7 +830,7 @@ mod tests {
         std::fs::create_dir_all(&root_dir).unwrap();
         std::fs::write(root_dir.join(".vimrc"), "old content").unwrap();
 
-        restore(&repo_dir, &root_dir, true, true).unwrap();
+        restore(&repo_dir, &root_dir, true, true, false).unwrap();
 
         assert_eq!(
             std::fs::read_link(root_dir.join(".vimrc")).unwrap(),
@@ -702,7 +848,7 @@ mod tests {
         std::fs::create_dir_all(&root_dir).unwrap();
         std::fs::write(root_dir.join(".vimrc"), "old content").unwrap();
 
-        assert!(restore(&repo_dir, &root_dir, true, false).is_err());
+        assert!(restore(&repo_dir, &root_dir, true, false, false).is_err());
     }
 
     #[test]

@@ -145,12 +145,29 @@ conflict  .vimrc  (a broken symlink)
 | Option | Default | Description |
 | --- | --- | --- |
 | `-m, --mode <symlinks\|files>` | `symlinks` | Symlink back to the repository, or copy real files out of it. |
-| `-o, --overwrite` | off | Move conflicting files aside into a temporary directory instead of failing. |
+| `-o, --overwrite` | off | Move conflicting files aside into a backup directory instead of failing. |
+| `--dry-run` | off | Show what would happen without changing anything. |
 
 ```sh
 dotty restore                  # symlink everything into place
 dotty restore --mode files     # copy instead, leaving no dependency on the repo
 dotty restore --overwrite      # stash anything already there, then restore
+dotty restore --dry-run        # show what it would do, and change nothing
+```
+
+Anything `--overwrite` displaces is moved into `~/.dotty-backup-<timestamp>/`,
+beside your dotfiles rather than into the system temp directory, so it is still
+there when you come looking for it.
+
+### Trying before doing
+
+`add`, `restore` and `remove` all take `--dry-run`:
+
+```console
+$ dotty restore --dry-run
+would restore .config/nvim/init.lua
+would skip .zshrc - ~/.zshrc is a different file; pass --overwrite to move it aside
+1 path would be restored, 1 blocked; nothing was changed
 ```
 
 ### Global options

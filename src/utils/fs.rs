@@ -13,7 +13,6 @@
 //! matching dotty's supported targets.
 
 use super::string::random_string;
-use std::env;
 use std::fs;
 use std::io::ErrorKind;
 use std::os::unix::fs as unix_fs;
@@ -191,45 +190,60 @@ pub fn placement(from: &Path, to: &Path) -> Result<Placement, String> {
 ///
 /// The directory removes itself on drop, but only while it is still empty, so
 /// anything actually moved aside survives for the user to recover.
-pub struct OverwriteTempDir {
-    temp_dir: PathBuf,
+pub struct BackupDir {
+    dir: PathBuf,
 }
 
-impl Drop for OverwriteTempDir {
+impl Drop for BackupDir {
     fn drop(&mut self) {
-        if let Ok(true) = is_empty(&self.temp_dir) {
-            let _ = remove_dir(&self.temp_dir);
+        if let Ok(true) = is_empty(&self.dir) {
+            let _ = remove_dir(&self.dir);
         }
     }
 }
 
-impl OverwriteTempDir {
+impl BackupDir {
     /// Returns where a dotfile with the given repository-relative path should
     /// be moved aside to. Creates nothing; it only builds the path.
     pub fn entry(&self, path: &Path) -> PathBuf {
-        self.temp_dir.join(path)
+        self.dir.join(path)
     }
 
     /// The directory itself, so that callers can tell the user where to look
     /// for anything that was displaced.
     pub fn path(&self) -> &Path {
-        &self.temp_dir
+        &self.dir
     }
 }
 
-/// Creates a uniquely named holding directory under the system temp directory.
-pub fn create_overwrite_temp_dir(prefix: &str) -> Result<OverwriteTempDir, String> {
-    let name = prefix.to_owned() + &random_string(7);
-    let temp_dir = env::temp_dir().join(name);
-    if let Err(err) = fs::create_dir(&temp_dir) {
+/// Creates the directory that displaced files are moved into, beside the
+/// dotfiles themselves rather than under the system temp directory.
+///
+/// These are the user's real configuration files, moved out of the way to make
+/// room; leaving them somewhere the operating system reaps on its own schedule
+/// is no place for them. The name carries the time the run started, so
+/// successive restores stay separate and sort into order.
+pub fn create_backup_dir(root: &Path) -> Result<BackupDir, String> {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or_default();
+
+    let mut dir = root.join(format!(".dotty-backup-{seconds}"));
+    if dir.exists() {
+        // Two runs in the same second still get somewhere of their own.
+        dir = root.join(format!(".dotty-backup-{seconds}-{}", random_string(4)));
+    }
+
+    if let Err(err) = fs::create_dir_all(&dir) {
         return Err(format!(
-            "failed to create temp dir {} - {}",
-            temp_dir.display(),
+            "failed to create backup directory {} - {}",
+            dir.display(),
             err
         ));
     }
-    log::trace!("created overwrite temp dir {}", temp_dir.display());
-    Ok(OverwriteTempDir { temp_dir })
+    log::debug!("created backup directory {}", dir.display());
+    Ok(BackupDir { dir })
 }
 
 /// Removes a symlink, leaving whatever it pointed at untouched.
@@ -680,30 +694,54 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_temp_dir_is_removed_when_empty_on_drop() {
-        let temp_dir_path;
+    fn backup_dir_is_removed_when_empty_on_drop() {
+        let (_dir, dir) = canonical_tempdir();
+        let backup_path;
         {
-            let overwrite = create_overwrite_temp_dir("dotty-test-").unwrap();
-            temp_dir_path = overwrite
-                .entry(Path::new("marker"))
-                .parent()
-                .unwrap()
-                .to_owned();
-            assert!(temp_dir_path.exists());
+            let backup = create_backup_dir(&dir).unwrap();
+            backup_path = backup.path().to_owned();
+            assert!(backup_path.exists());
         }
-        assert!(!temp_dir_path.exists());
+        assert!(!backup_path.exists());
     }
 
     #[test]
-    fn overwrite_temp_dir_is_kept_when_not_empty_on_drop() {
-        let temp_dir_path;
+    fn backup_dir_is_kept_when_not_empty_on_drop() {
+        let (_dir, dir) = canonical_tempdir();
+        let backup_path;
         {
-            let overwrite = create_overwrite_temp_dir("dotty-test-").unwrap();
-            let entry = overwrite.entry(Path::new("file"));
-            fs::write(&entry, "content").unwrap();
-            temp_dir_path = entry.parent().unwrap().to_owned();
+            let backup = create_backup_dir(&dir).unwrap();
+            backup_path = backup.path().to_owned();
+            fs::write(backup.entry(Path::new("file")), "content").unwrap();
         }
-        assert!(temp_dir_path.exists());
-        fs::remove_dir_all(&temp_dir_path).unwrap();
+        assert!(backup_path.exists());
+    }
+
+    // The whole point of moving it out of the temp directory is that it sits
+    // with the dotfiles, where nothing else will clear it away.
+    #[test]
+    fn backup_dir_is_created_beside_the_dotfiles() {
+        let (_dir, dir) = canonical_tempdir();
+
+        let backup = create_backup_dir(&dir).unwrap();
+
+        assert_eq!(backup.path().parent().unwrap(), dir);
+        assert!(backup
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with(".dotty-backup-"));
+    }
+
+    #[test]
+    fn backup_dirs_do_not_collide() {
+        let (_dir, dir) = canonical_tempdir();
+
+        let first = create_backup_dir(&dir).unwrap();
+        let second = create_backup_dir(&dir).unwrap();
+
+        assert_ne!(first.path(), second.path());
     }
 }

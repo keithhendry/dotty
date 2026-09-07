@@ -78,6 +78,10 @@ struct Add {
     /// The paths to the files or directories
     #[clap()]
     paths: Vec<PathBuf>,
+
+    /// Shows what would happen without changing anything
+    #[clap(long)]
+    dry_run: bool,
 }
 
 #[derive(Parser)]
@@ -89,6 +93,10 @@ struct Restore {
     /// Overwrites existing files/symlinks
     #[clap(short, long, default_value = "false")]
     overwrite: bool,
+
+    /// Shows what would happen without changing anything
+    #[clap(long)]
+    dry_run: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
@@ -118,6 +126,10 @@ struct Remove {
     /// The paths to stop managing
     #[clap()]
     paths: Vec<PathBuf>,
+
+    /// Shows what would happen without changing anything
+    #[clap(long)]
+    dry_run: bool,
 }
 
 /// Sets up terminal logging, with `-v` raising the level each time it is given:
@@ -172,17 +184,20 @@ fn run(opts: &Opts) -> Result<(), String> {
     match &opts.subcmd {
         SubCommand::Init(_) => init(&repo),
         SubCommand::Clone(clone_cmd) => clone(&repo, &clone_cmd.url),
-        SubCommand::Add(add_cmd) => add(&repo, &root, &add_cmd.paths),
+        SubCommand::Add(add_cmd) => add(&repo, &root, &add_cmd.paths, add_cmd.dry_run),
         SubCommand::Restore(restore_cmd) => restore(
             &repo,
             &root,
             restore_cmd.mode == RestoreMode::Symlinks,
             restore_cmd.overwrite,
+            restore_cmd.dry_run,
         ),
         SubCommand::Sync(sync_cmd) => sync(&repo, sync_cmd.url.as_deref()),
         SubCommand::Update(_) => update(&repo),
         SubCommand::Status(_) => status(&repo, &root),
-        SubCommand::Remove(remove_cmd) => remove(&repo, &root, &remove_cmd.paths),
+        SubCommand::Remove(remove_cmd) => {
+            remove(&repo, &root, &remove_cmd.paths, remove_cmd.dry_run)
+        }
     }
 }
 

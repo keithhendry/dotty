@@ -5,7 +5,7 @@ use rand::{distr::Alphanumeric, RngExt};
 /// Returns a random alphanumeric string of exactly `size` characters.
 ///
 /// Used to give the overwrite directory created by
-/// [`crate::utils::fs::create_overwrite_temp_dir`] a name that will not collide
+/// [`crate::utils::fs::create_backup_dir`] a name that will not collide
 /// with an existing directory. It is not suitable for anything security
 /// sensitive.
 pub fn random_string(size: usize) -> String {
