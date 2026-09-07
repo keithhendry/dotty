@@ -344,6 +344,96 @@ fn add_leaves_an_already_added_file_alone() {
     );
 }
 
+// add rearranges real files, so anything knowable in advance is checked before
+// it starts. Each of these used to move the file first and fail afterwards,
+// leaving it symlinked into the repository but never committed -- and a retry
+// then did nothing, because the file looked like it was already managed.
+#[test]
+fn add_before_init_leaves_the_file_alone() {
+    let machine = Machine::new();
+    machine.write(".zshrc", "shell\n");
+
+    let output = machine.dotty(&["add", ".zshrc"]);
+
+    assert_failed(&output);
+    assert!(
+        !is_symlink(&machine.path(".zshrc")),
+        "the file should not have been moved"
+    );
+    assert_eq!(machine.read(".zshrc"), "shell\n");
+}
+
+#[test]
+fn add_without_a_git_identity_leaves_the_file_alone() {
+    let machine = Machine::new();
+    fs::remove_file(machine.path(".gitconfig")).unwrap();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".zshrc", "shell\n");
+
+    let output = machine.dotty(&["add", ".zshrc"]);
+
+    assert_failed(&output);
+    assert!(
+        text(&output).contains("user.name"),
+        "the error should say what to configure, got: {}",
+        text(&output)
+    );
+    assert!(!is_symlink(&machine.path(".zshrc")));
+}
+
+#[test]
+fn add_skips_a_git_repository_with_no_origin_and_still_adds_the_rest() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".zshrc", "shell\n");
+    // A plugin directory that was never cloned from anywhere.
+    let plugin = machine.path(".vim/plugged/local");
+    fs::create_dir_all(&plugin).unwrap();
+    let dir = plugin.to_str().unwrap();
+    git_ok(&machine.home, &["init", dir]);
+    fs::write(plugin.join("plugin.vim"), "local\n").unwrap();
+    git_ok(&machine.home, &["-C", dir, "add", "-A"]);
+    git_ok(&machine.home, &["-C", dir, "commit", "-m", "local"]);
+
+    assert_ok(&machine.dotty(&["add", ".zshrc", ".vim/plugged/local"]));
+
+    // The unrelated file still got added...
+    assert!(is_symlink(&machine.path(".zshrc")));
+    assert_eq!(
+        git_ok(
+            &machine.home,
+            &["-C", machine.repo().to_str().unwrap(), "ls-files"]
+        ),
+        ".zshrc"
+    );
+    // ...and the plugin was left exactly where it was.
+    assert!(!is_symlink(&plugin));
+}
+
+// A machine stranded by an older version: the file sits in the repository,
+// symlinked, but was never committed. Adding it again should finish the job.
+#[test]
+fn add_commits_a_file_left_in_the_repository_uncommitted() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".dotty/.zshrc", "shell\n");
+    std::os::unix::fs::symlink(machine.repo().join(".zshrc"), machine.path(".zshrc")).unwrap();
+
+    assert_ok(&machine.dotty(&["add", ".zshrc"]));
+
+    let repo = machine.repo();
+    let repo = repo.to_str().unwrap();
+    assert_eq!(git_ok(&machine.home, &["-C", repo, "ls-files"]), ".zshrc");
+
+    // And doing it once more really is a no-op.
+    let before = git_ok(&machine.home, &["-C", repo, "rev-list", "--count", "HEAD"]);
+    assert_ok(&machine.dotty(&["add", ".zshrc"]));
+    assert_eq!(
+        git_ok(&machine.home, &["-C", repo, "rev-list", "--count", "HEAD"]),
+        before
+    );
+}
+
 // ---------------------------------------------------------------- restore
 
 #[test]

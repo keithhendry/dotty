@@ -222,6 +222,44 @@ pub fn commit(repo: &Repository, message: &str) -> Result<Oid, String> {
     )
 }
 
+/// The `origin` url of the repository at `path`, which is what a submodule
+/// records as its source.
+///
+/// Callers use this to find out whether a directory *can* be added as a
+/// submodule before anything is moved on disk.
+pub fn origin_url(path: &Path) -> Result<String, String> {
+    let repo = open(path)?;
+    get_origin_url(&repo)
+}
+
+/// Confirms the repository can produce a commit signature.
+///
+/// Checked before any files are moved: without `user.name` and `user.email`
+/// the commit at the end would fail, having already rearranged the machine.
+pub fn check_signature(repo: &Repository) -> Result<(), String> {
+    repo.signature().map(|_| ()).map_err(|err| {
+        format!(
+            "cannot commit to git repository {} - {}; set user.name and user.email in your git configuration",
+            repo.path().display(),
+            err
+        )
+    })
+}
+
+/// Whether the last commit already contains `path`, which is relative to the
+/// repository's working directory.
+///
+/// Deliberately asks about the commit rather than the index: a file staged by
+/// an earlier run that failed before committing still needs committing.
+pub fn is_committed(repo: &Repository, path: &Path) -> bool {
+    find_last_commit(repo)
+        .ok()
+        .flatten()
+        .and_then(|commit| commit.tree().ok())
+        .map(|tree| tree.get_path(path).is_ok())
+        .unwrap_or(false)
+}
+
 /// Registers already-cloned git repositories as submodules of `repo`.
 ///
 /// Each path is relative to the repository's working directory (see the [module
