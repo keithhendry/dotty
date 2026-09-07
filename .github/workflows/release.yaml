@@ -12,7 +12,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Set version
         run: |
           sed -i .bak "s/0.0.0/$GITHUB_REF_NAME/g" Cargo.toml
@@ -22,13 +22,13 @@ jobs:
           rustup show
       - name: Build
         run: |
-          cargo build -Z unstable-options --target aarch64-apple-darwin --release
+          cargo build --target aarch64-apple-darwin --release
       - name: Tar
         run: |
           cd target/aarch64-apple-darwin/release
           tar -czvf dotty-${{ github.ref_name }}-darwin-arm64.tar.gz dotty
       - name: Upload
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: build-darwin-arm64
           path: target/aarch64-apple-darwin/release/dotty-${{ github.ref_name }}-darwin-arm64.tar.gz
@@ -39,7 +39,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Set version
         run: |
           sed -i .bak "s/0.0.0/$GITHUB_REF_NAME/g" Cargo.toml
@@ -49,13 +49,13 @@ jobs:
           rustup show
       - name: Build
         run: |
-          cargo build -Z unstable-options --target x86_64-apple-darwin --release
+          cargo build --target x86_64-apple-darwin --release
       - name: Tar
         run: |
           cd target/x86_64-apple-darwin/release
           tar -czvf dotty-${{ github.ref_name  }}-darwin-amd64.tar.gz dotty
       - name: Upload
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: build-darwin-amd64
           path: target/x86_64-apple-darwin/release/dotty-${{ github.ref_name }}-darwin-amd64.tar.gz
@@ -66,7 +66,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Set version
         run: |
           sed -i "s/0.0.0/$GITHUB_REF_NAME/g" Cargo.toml
@@ -76,13 +76,13 @@ jobs:
           rustup show
       - name: Build
         run: |
-          cargo build -Z unstable-options --target x86_64-unknown-linux-gnu --release
+          cargo build --target x86_64-unknown-linux-gnu --release
       - name: Tar
         run: |
           cd target/x86_64-unknown-linux-gnu/release
           tar -czvf dotty-${{ github.ref_name  }}-linux-amd64.tar.gz dotty
       - name: Upload
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: build-linux-amd64
           path: target/x86_64-unknown-linux-gnu/release/dotty-${{ github.ref_name  }}-linux-amd64.tar.gz
@@ -96,9 +96,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
       - name: Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true
           generate_release_notes: true
@@ -112,14 +112,14 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: tibdex/github-app-token@v1
+      - uses: tibdex/github-app-token@v2
         id: generate-token
         with:
           app_id: ${{ secrets.HOMEBREW_DOTTY_PR_APP_ID }}
           private_key: ${{ secrets.HOMEBREW_DOTTY_PR_APP_PRIVATE_KEY }}
           repository: keithhendry/homebrew-dotty
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: keithhendry/homebrew-dotty
           token: ${{ steps.generate-token.outputs.token }}

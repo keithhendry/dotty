@@ -16,7 +16,7 @@ jobs:
           rustup show
       - name: Build
         run: |
-          cargo build -Z unstable-options --target aarch64-apple-darwin
+          cargo build --locked --target aarch64-apple-darwin
       - name: Tar
         run: |
           cd target/aarch64-apple-darwin/debug
@@ -40,7 +40,7 @@ jobs:
           rustup show
       - name: Build
         run: |
-          cargo build -Z unstable-options --target x86_64-apple-darwin
+          cargo build --locked --target x86_64-apple-darwin
       - name: Tar
         run: |
           cd target/x86_64-apple-darwin/debug
@@ -64,7 +64,7 @@ jobs:
           rustup show
       - name: Build
         run: |
-          cargo build -Z unstable-options --target x86_64-unknown-linux-gnu
+          cargo build --locked --target x86_64-unknown-linux-gnu
       - name: Tar
         run: |
           cd target/x86_64-unknown-linux-gnu/debug
@@ -74,6 +74,28 @@ jobs:
         with:
           name: build-linux-amd64
           path: target/x86_64-unknown-linux-gnu/debug/dotty-linux-amd64.tar.gz
+
+  test:
+    name: Test ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          rustup show
+      - name: Test
+        run: |
+          cargo test --locked
 
   lint:
     name: Lint
@@ -88,7 +110,7 @@ jobs:
           rustup show
       - name: Clippy
         run: |
-          cargo clippy -- -D warnings
+          cargo clippy --locked --all-targets -- -D warnings
       - name: Formatting
         run: |
           cargo fmt --check
