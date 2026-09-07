@@ -20,6 +20,11 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           rustup show
+      # Vendored OpenSSL and libgit2 are compiled from C source and dominate a
+      # cold build. Caching keys on the lockfile, so it is only paid again when
+      # dependencies actually change.
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
       # Testing and building the same target reuses one set of compiled
       # dependencies. Splitting them across jobs, or leaving the target off the
       # test command, builds vendored OpenSSL and libgit2 twice over.
@@ -52,6 +57,11 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           rustup show
+      # Vendored OpenSSL and libgit2 are compiled from C source and dominate a
+      # cold build. Caching keys on the lockfile, so it is only paid again when
+      # dependencies actually change.
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
       - name: Test
         run: |
           cargo test --locked --target x86_64-apple-darwin
@@ -79,6 +89,11 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           rustup show
+      # Vendored OpenSSL and libgit2 are compiled from C source and dominate a
+      # cold build. Caching keys on the lockfile, so it is only paid again when
+      # dependencies actually change.
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
       - name: Test
         run: |
           cargo test --locked --target x86_64-unknown-linux-gnu
@@ -106,6 +121,11 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           rustup show
+      # Vendored OpenSSL and libgit2 are compiled from C source and dominate a
+      # cold build. Caching keys on the lockfile, so it is only paid again when
+      # dependencies actually change.
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: |
           cargo clippy --locked --all-targets -- -D warnings
