@@ -42,7 +42,9 @@ jobs:
       - name: Get next version
         id: next
         if: github.event_name == 'workflow_dispatch'
-        uses: thenativeweb/get-next-version@main
+        # Pinned to the 2.8.1 release commit. This runs in the only workflow
+        # with contents: write, so it must not follow a moving branch.
+        uses: thenativeweb/get-next-version@d7a49b4d839e01b2152a3e742c06c9e3dc5976dd
       - name: Resolve the version
         id: resolve
         env:
