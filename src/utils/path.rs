@@ -7,8 +7,8 @@
 //! rest of the program relies on being able to strip the root prefix off a
 //! path to decide where its counterpart belongs.
 
-use home_dir::HomeDirExt;
-use std::path::{Path, PathBuf};
+use std::env;
+use std::path::{Component, Path, PathBuf};
 
 /// Expands a leading `~` and resolves `path` to an absolute, symlink-free form.
 ///
@@ -17,16 +17,7 @@ use std::path::{Path, PathBuf};
 /// appended to it. That matters because dotty is routinely handed paths that
 /// have not been created yet, such as `~/.dotty` on the very first `dotty init`.
 pub fn canonicalize(path: &Path) -> Result<PathBuf, String> {
-    let tilde_expanded = match path.expand_home() {
-        Ok(expanded) => expanded,
-        Err(err) => {
-            return Err(format!(
-                "failed to expand home dir {} - {}",
-                path.display(),
-                err
-            ))
-        }
-    };
+    let tilde_expanded = expand_home(path)?;
     let canonical = canonicalize_missing(&tilde_expanded)?;
     if !canonical.eq(path) {
         log::trace!(
@@ -36,6 +27,45 @@ pub fn canonicalize(path: &Path) -> Result<PathBuf, String> {
         );
     }
     Ok(canonical)
+}
+
+/// Expands a leading `~` to the current user's home directory.
+///
+/// Only the user's own `~` is expanded. `~someone-else` is rejected rather than
+/// quietly taken as a directory literally named that, which is what looking it
+/// up would otherwise hide.
+fn expand_home(path: &Path) -> Result<PathBuf, String> {
+    expand_home_from(path, env::home_dir())
+}
+
+/// The part of [`expand_home`] that does not read the environment, so that it
+/// can be tested without mutating it.
+fn expand_home_from(path: &Path, home: Option<PathBuf>) -> Result<PathBuf, String> {
+    let mut components = path.components();
+    let first = match components.next() {
+        Some(Component::Normal(first)) => first.to_str().unwrap_or_default(),
+        // Anything else — a root, a prefix, `.` or `..` — cannot start with a
+        // tilde, so there is nothing to expand.
+        _ => return Ok(path.to_owned()),
+    };
+
+    if !first.starts_with('~') {
+        return Ok(path.to_owned());
+    }
+    if first != "~" {
+        return Err(format!(
+            "cannot expand {} - only a leading ~ for your own home directory is supported",
+            path.display()
+        ));
+    }
+
+    match home {
+        Some(home) => Ok(home.join(components.as_path())),
+        None => Err(format!(
+            "cannot expand ~ in {} - the home directory is unknown; set HOME or give the full path",
+            path.display()
+        )),
+    }
 }
 
 /// Canonicalizes `path`, walking up to the first ancestor that exists.
@@ -146,6 +176,60 @@ pub fn common_base_path(paths: &[PathBuf]) -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn expand_home_replaces_a_leading_tilde() {
+        let home = Some(PathBuf::from("/home/alice"));
+
+        assert_eq!(
+            expand_home_from(Path::new("~"), home.clone()).unwrap(),
+            PathBuf::from("/home/alice")
+        );
+        assert_eq!(
+            expand_home_from(Path::new("~/.dotty"), home).unwrap(),
+            PathBuf::from("/home/alice/.dotty")
+        );
+    }
+
+    #[test]
+    fn expand_home_leaves_other_paths_alone() {
+        let home = Some(PathBuf::from("/home/alice"));
+
+        for path in ["/etc/hosts", "relative/path", "./here", "../up"] {
+            assert_eq!(
+                expand_home_from(Path::new(path), home.clone()).unwrap(),
+                PathBuf::from(path),
+                "{path} should be untouched"
+            );
+        }
+    }
+
+    // A tilde only means home at the very start of a path.
+    #[test]
+    fn expand_home_ignores_a_tilde_further_along() {
+        let home = Some(PathBuf::from("/home/alice"));
+
+        assert_eq!(
+            expand_home_from(Path::new("/etc/~weird"), home).unwrap(),
+            PathBuf::from("/etc/~weird")
+        );
+    }
+
+    #[test]
+    fn expand_home_rejects_another_users_home() {
+        let home = Some(PathBuf::from("/home/alice"));
+
+        let err = expand_home_from(Path::new("~bob/.dotty"), home).unwrap_err();
+
+        assert!(err.contains("only a leading ~"), "got: {err}");
+    }
+
+    #[test]
+    fn expand_home_reports_an_unknown_home_directory() {
+        let err = expand_home_from(Path::new("~/.dotty"), None).unwrap_err();
+
+        assert!(err.contains("home directory is unknown"), "got: {err}");
+    }
 
     #[test]
     fn canonicalize_resolves_existing_path() {

@@ -633,6 +633,20 @@ fn the_repository_and_root_can_be_set_by_environment() {
 }
 
 #[test]
+fn a_tilde_for_another_users_home_is_rejected() {
+    let machine = Machine::new();
+
+    let output = machine.dotty(&["-r", "~someone/.dotty", "init"]);
+
+    assert_failed(&output);
+    assert!(
+        text(&output).contains("only a leading ~"),
+        "got: {}",
+        text(&output)
+    );
+}
+
+#[test]
 fn an_unknown_subcommand_is_rejected() {
     let machine = Machine::new();
 
