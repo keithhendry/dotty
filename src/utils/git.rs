@@ -2,9 +2,10 @@
 //!
 //! Everything git does for dotty happens through libgit2 rather than by
 //! shelling out, so there is no dependency on a `git` binary being installed.
-//! Authentication with remotes is delegated to the user's configured git
-//! credential helper, which is why an existing `git push` to GitHub is enough
-//! to make `dotty sync` work.
+//! Remotes are authenticated the way git itself would: an ssh key from the
+//! running ssh agent for ssh remotes, and the configured credential helper for
+//! https ones. Whatever already lets you `git push` should let `dotty sync`
+//! push too.
 //!
 //! # Path conventions
 //!
@@ -478,13 +479,90 @@ fn get_remote<'a>(repo: &'a Repository, url: Option<&str>) -> Result<Remote<'a>,
     }
 }
 
-/// Builds remote callbacks that authenticate via the user's git credential
-/// helper, so dotty reuses whatever credentials `git` itself already uses.
+/// The username to authenticate as when an ssh url does not name one, which is
+/// what every `github.com:user/repo.git` style remote relies on.
+const DEFAULT_SSH_USER: &str = "git";
+
+/// What to offer libgit2 for a single authentication attempt.
+#[derive(Debug, PartialEq)]
+enum CredentialAttempt {
+    /// The username, which libgit2 asks for before it will ask for a key.
+    Username,
+    /// A key held by the running ssh agent.
+    SshAgent,
+    /// A username and password from the user's git credential helper.
+    Helper,
+    /// Whatever the transport negotiates for itself, such as Kerberos.
+    Negotiated,
+    /// Nothing left to offer.
+    Exhausted,
+}
+
+/// Tracks what has already been offered, so a rejected credential is not
+/// offered again. libgit2 calls the callback repeatedly until one is accepted,
+/// so without this a rejected key would loop forever.
+#[derive(Default)]
+struct CredentialState {
+    username_offered: bool,
+    ssh_agent_tried: bool,
+}
+
+/// Picks the credential to offer, given what the transport will accept.
+///
+/// The order matters. libgit2 asks for a username first on ssh urls that do not
+/// carry one, then for a key; https asks for a username and password, which is
+/// what the git credential helper provides.
+fn choose_credential(allowed: CredentialType, state: &CredentialState) -> CredentialAttempt {
+    if allowed.contains(CredentialType::USERNAME) && !state.username_offered {
+        return CredentialAttempt::Username;
+    }
+    if allowed.contains(CredentialType::SSH_KEY) && !state.ssh_agent_tried {
+        return CredentialAttempt::SshAgent;
+    }
+    if allowed.contains(CredentialType::USER_PASS_PLAINTEXT) {
+        return CredentialAttempt::Helper;
+    }
+    if allowed.contains(CredentialType::DEFAULT) {
+        return CredentialAttempt::Negotiated;
+    }
+    CredentialAttempt::Exhausted
+}
+
+/// Builds remote callbacks that authenticate the way git itself would: an ssh
+/// key from the ssh agent for ssh remotes, and the user's credential helper for
+/// https remotes.
 fn create_callbacks<'a>() -> RemoteCallbacks<'a> {
     let mut callbacks = RemoteCallbacks::new();
+    let mut state = CredentialState::default();
     callbacks.credentials(
-        |url: &str, username_from_url: Option<&str>, _cred: CredentialType| {
-            Cred::credential_helper(&Config::open_default()?, url, username_from_url)
+        move |url: &str, username_from_url: Option<&str>, allowed: CredentialType| {
+            let username = username_from_url.unwrap_or(DEFAULT_SSH_USER);
+            match choose_credential(allowed, &state) {
+                CredentialAttempt::Username => {
+                    state.username_offered = true;
+                    log::trace!("offering username {} for {}", username, url);
+                    Cred::username(username)
+                }
+                CredentialAttempt::SshAgent => {
+                    state.ssh_agent_tried = true;
+                    log::debug!("authenticating to {} with the ssh agent", url);
+                    Cred::ssh_key_from_agent(username)
+                }
+                CredentialAttempt::Helper => {
+                    log::debug!("authenticating to {} with the credential helper", url);
+                    Cred::credential_helper(&Config::open_default()?, url, username_from_url)
+                }
+                CredentialAttempt::Negotiated => {
+                    log::debug!("letting the transport authenticate to {} itself", url);
+                    Cred::default()
+                }
+                CredentialAttempt::Exhausted => Err(git2::Error::from_str(&format!(
+                    "no usable credentials for {}. for an ssh remote, check that \
+                     ssh-agent is running and has your key (ssh-add -l); for https, \
+                     check that a git credential helper is configured",
+                    url
+                ))),
+            }
         },
     );
     callbacks
@@ -709,6 +787,89 @@ mod tests {
         fs::write(dir.join(name), contents).unwrap();
         stage_all_paths(repo, &vec![PathBuf::from(name)]).unwrap();
         commit(repo, message).unwrap();
+    }
+
+    #[test]
+    fn credential_username_is_offered_before_a_key() {
+        let state = CredentialState::default();
+        let allowed = CredentialType::USERNAME | CredentialType::SSH_KEY;
+
+        assert_eq!(
+            choose_credential(allowed, &state),
+            CredentialAttempt::Username
+        );
+    }
+
+    #[test]
+    fn credential_ssh_key_comes_from_the_agent() {
+        let state = CredentialState {
+            username_offered: true,
+            ssh_agent_tried: false,
+        };
+
+        assert_eq!(
+            choose_credential(CredentialType::SSH_KEY, &state),
+            CredentialAttempt::SshAgent
+        );
+    }
+
+    #[test]
+    fn credential_https_uses_the_credential_helper() {
+        let state = CredentialState::default();
+
+        assert_eq!(
+            choose_credential(CredentialType::USER_PASS_PLAINTEXT, &state),
+            CredentialAttempt::Helper
+        );
+    }
+
+    // libgit2 keeps calling the callback until a credential is accepted, so
+    // offering a rejected one again would spin forever.
+    #[test]
+    fn credential_offers_are_not_repeated() {
+        let state = CredentialState {
+            username_offered: true,
+            ssh_agent_tried: true,
+        };
+
+        assert_eq!(
+            choose_credential(CredentialType::USERNAME | CredentialType::SSH_KEY, &state),
+            CredentialAttempt::Exhausted
+        );
+    }
+
+    #[test]
+    fn credential_falls_back_to_the_helper_once_the_agent_is_spent() {
+        let state = CredentialState {
+            username_offered: true,
+            ssh_agent_tried: true,
+        };
+        let allowed = CredentialType::SSH_KEY | CredentialType::USER_PASS_PLAINTEXT;
+
+        assert_eq!(
+            choose_credential(allowed, &state),
+            CredentialAttempt::Helper
+        );
+    }
+
+    #[test]
+    fn credential_lets_the_transport_negotiate_when_that_is_all_it_offers() {
+        let state = CredentialState::default();
+
+        assert_eq!(
+            choose_credential(CredentialType::DEFAULT, &state),
+            CredentialAttempt::Negotiated
+        );
+    }
+
+    #[test]
+    fn credential_is_exhausted_when_nothing_is_allowed() {
+        let state = CredentialState::default();
+
+        assert_eq!(
+            choose_credential(CredentialType::empty(), &state),
+            CredentialAttempt::Exhausted
+        );
     }
 
     #[test]
