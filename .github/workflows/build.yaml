@@ -4,9 +4,13 @@ on: push
 
 # Job names are required status checks on main, so renaming one means updating
 # the branch protection rule to match.
+#
+# The job ids, artifact names and tarball names stay in darwin/linux terms:
+# release.yaml uploads the same artifact names, and the Homebrew tap builds its
+# download urls as dotty-$VERSION-$PLATFORM-$ARCHITECTURE.tar.gz.
 jobs:
   build-darwin-arm64:
-    name: Build MacOS arm64
+    name: Test macOS arm64
     runs-on: macos-latest
 
     steps:
@@ -36,11 +40,11 @@ jobs:
           path: target/aarch64-apple-darwin/debug/dotty-darwin-arm64.tar.gz
 
   build-darwin-amd64:
-    name: Build MacOS amd64
-    runs-on: macos-latest
+    name: Test macOS amd64
+    # An Intel runner, so this builds and tests x86_64 natively rather than
+    # cross compiling it from arm64 and leaving it untested.
+    runs-on: macos-15-intel
 
-    # Cross compiled from an arm64 runner, so the test suite cannot run here.
-    # It runs natively in the arm64 and linux jobs instead.
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,6 +52,9 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           rustup show
+      - name: Test
+        run: |
+          cargo test --locked --target x86_64-apple-darwin
       - name: Build
         run: |
           cargo build --locked --target x86_64-apple-darwin
@@ -62,7 +69,7 @@ jobs:
           path: target/x86_64-apple-darwin/debug/dotty-darwin-amd64.tar.gz
 
   build-linux-amd64:
-    name: Build Linux amd64
+    name: Test Linux amd64
     runs-on: ubuntu-latest
 
     steps:
