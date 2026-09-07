@@ -139,9 +139,10 @@ By default the repository lives at `~/.dotty` and the root is its parent, `~`.
 Point `--repository` and `--root` somewhere else and the same rules apply, so
 you can keep a repository of project configs somewhere entirely different.
 
-**Authentication** is delegated to the git credential helper you have already
-configured, so pushing to a private HTTPS remote uses the same credentials
-`git push` does.
+**Authentication** reuses what git already has. SSH remotes
+(`git@github.com:you/dotfiles.git`) authenticate with a key from your running
+ssh agent, and HTTPS remotes go through your configured git credential helper.
+If `git push` works for a remote, `dotty sync` should too.
 
 **`dotty sync` refuses to run on a dirty working tree,** and stops at a merge
 conflict rather than guessing — the conflict is left checked out for you to
