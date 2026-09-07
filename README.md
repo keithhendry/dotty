@@ -98,6 +98,28 @@ From then on, `dotty sync` in either direction is enough to keep them together.
 | `dotty restore` | Puts the repository's files back onto the machine. |
 | `dotty sync [url]` | Fetches, merges and pushes. Pass a URL to set or change `origin`. |
 | `dotty update` | Fast-forwards every submodule to the latest commit on its default branch, and commits the result. |
+| `dotty status` | Shows what the repository tracks and how each file stands on this machine. Changes nothing. |
+
+### `dotty status`
+
+```console
+$ dotty status
+  linked  .config/nvim/init.lua
+ missing  .gitconfig_extra
+  copied  .profile
+conflict  .tmux.conf  (a different file)
+conflict  .vimrc  (a broken symlink)
+  linked  .zshrc
+
+6 tracked, 1 missing, 2 conflicting
+```
+
+| State | Meaning |
+| --- | --- |
+| `linked` | A symlink into the repository — edits on either side are the same edit. |
+| `copied` | A plain copy, as `restore --mode files` leaves behind. |
+| `missing` | Tracked, but not on this machine yet. `dotty restore` puts it in place. |
+| `conflict` | Something else is in the way; the reason is given. `--overwrite` moves it aside. |
 
 ### `dotty restore`
 

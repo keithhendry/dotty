@@ -143,6 +143,50 @@ pub fn restore(
     }
 }
 
+/// How a dotfile on the machine relates to the repository's copy of it.
+#[derive(Debug, PartialEq)]
+pub enum Placement {
+    /// A symlink pointing at the repository's copy: managed, and edits to
+    /// either side are the same edit.
+    Linked,
+    /// A plain copy of the repository's file, as `restore --mode files` leaves
+    /// behind. Directories are reported this way without comparing contents.
+    Copied,
+    /// Nothing is there; a restore would put it in place.
+    Missing,
+    /// Something else is in the way, described for the reader.
+    Conflict(String),
+}
+
+/// Reports what is sitting at `to`, relative to the repository's copy at
+/// `from`. Reads only; nothing is moved or created.
+pub fn placement(from: &Path, to: &Path) -> Result<Placement, String> {
+    let metadata = match symlink_metadata(to)? {
+        Some(metadata) => metadata,
+        None => return Ok(Placement::Missing),
+    };
+
+    if metadata.is_symlink() {
+        return Ok(match fs::canonicalize(to) {
+            Ok(resolved) if resolved == from => Placement::Linked,
+            Ok(resolved) => Placement::Conflict(format!("symlinked to {}", resolved.display())),
+            Err(_) => Placement::Conflict("a broken symlink".to_owned()),
+        });
+    }
+
+    // A submodule restored as files is a directory; comparing whole trees is
+    // more than this needs to say.
+    if from.is_dir() && to.is_dir() {
+        return Ok(Placement::Copied);
+    }
+
+    if same_contents(from, to)? {
+        return Ok(Placement::Copied);
+    }
+
+    Ok(Placement::Conflict("a different file".to_owned()))
+}
+
 /// A holding area for files displaced by `dotty restore --overwrite`.
 ///
 /// The directory removes itself on drop, but only while it is still empty, so
@@ -527,6 +571,75 @@ mod tests {
 
         assert_eq!(fs::read_link(&to).unwrap(), from);
         assert_eq!(fs::read_to_string(&moved_aside).unwrap(), "existing");
+    }
+
+    #[test]
+    fn placement_reports_a_correct_symlink_as_linked() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.zshrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "shell").unwrap();
+        let to = dir.join("root/.zshrc");
+        restore(&from, &to, None, true).unwrap();
+
+        assert_eq!(placement(&from, &to).unwrap(), Placement::Linked);
+    }
+
+    #[test]
+    fn placement_reports_an_identical_copy_as_copied() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.zshrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "shell").unwrap();
+        let to = dir.join("root/.zshrc");
+        restore(&from, &to, None, false).unwrap();
+
+        assert_eq!(placement(&from, &to).unwrap(), Placement::Copied);
+    }
+
+    #[test]
+    fn placement_reports_nothing_there_as_missing() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.zshrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "shell").unwrap();
+
+        assert_eq!(
+            placement(&from, &dir.join("root/.zshrc")).unwrap(),
+            Placement::Missing
+        );
+    }
+
+    #[test]
+    fn placement_describes_what_is_in_the_way() {
+        let (_dir, dir) = canonical_tempdir();
+        let from = dir.join("repo/.zshrc");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "shell").unwrap();
+        let to = dir.join("root/.zshrc");
+        fs::create_dir_all(to.parent().unwrap()).unwrap();
+
+        fs::write(&to, "something else").unwrap();
+        assert_eq!(
+            placement(&from, &to).unwrap(),
+            Placement::Conflict("a different file".to_owned())
+        );
+
+        fs::remove_file(&to).unwrap();
+        symlink(Path::new("/nowhere-at-all"), &to).unwrap();
+        assert_eq!(
+            placement(&from, &to).unwrap(),
+            Placement::Conflict("a broken symlink".to_owned())
+        );
+
+        fs::remove_file(&to).unwrap();
+        let elsewhere = dir.join("elsewhere");
+        fs::write(&elsewhere, "other").unwrap();
+        symlink(&elsewhere, &to).unwrap();
+        assert!(matches!(
+            placement(&from, &to).unwrap(),
+            Placement::Conflict(reason) if reason.starts_with("symlinked to")
+        ));
     }
 
     #[test]

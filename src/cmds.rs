@@ -14,10 +14,7 @@ use std::path::{Path, PathBuf};
 pub fn init(repo: &Path) -> Result<(), String> {
     git::init_or_open(repo)?;
 
-    log::info!(
-        "successfully initialized dotty repository {}",
-        repo.display()
-    );
+    println!("initialized dotty repository {}", repo.display());
     Ok(())
 }
 
@@ -28,11 +25,7 @@ pub fn init(repo: &Path) -> Result<(), String> {
 pub fn clone(repo: &Path, url: &str) -> Result<(), String> {
     git::clone_recurse(repo, url)?;
     // Check that it is a valid dotty repository
-    log::info!(
-        "successfully cloned dotty repository {} from {}",
-        repo.display(),
-        url,
-    );
+    println!("cloned {} into {}", url, repo.display());
     Ok(())
 }
 
@@ -96,8 +89,8 @@ pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String>
         git::stage_all_paths(&git_repo, &to_commit)?;
         git::commit(&git_repo, &build_git_message(&to_commit))?;
 
-        log::info!(
-            "successfully added {} to dotty repository {}",
+        println!(
+            "added {} to {}",
             if to_commit.len() == 1 {
                 to_commit.first().unwrap().display().to_string()
             } else {
@@ -127,19 +120,7 @@ pub fn restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Res
         false => None,
     };
 
-    let top_level_repo_paths = fs::read_dir(repo)?
-        .into_iter()
-        .filter(|p| {
-            p.file_name()
-                .and_then(|f| f.to_str())
-                .map(|f| !matches!(f, ".git" | ".gitmodules"))
-                .unwrap_or(true)
-        })
-        .collect();
-    let paths_to_restore: Vec<PathBuf> = flatten_paths_to_add(&top_level_repo_paths)?
-        .into_iter()
-        .map(|x| x.0)
-        .collect();
+    let paths_to_restore = repository_contents(repo)?;
 
     // One awkward file should not decide the fate of the rest. Failing on the
     // first one left the machine half configured, with no account of what had
@@ -177,9 +158,9 @@ pub fn restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Res
         ));
     }
 
-    log::info!(
-        "successfully restored dotty repository {} to {}, by {}",
-        repo.display(),
+    println!(
+        "restored {} paths to {} by {}",
+        total,
         root.display(),
         match symlinks {
             true => "creating symlinks",
@@ -189,12 +170,64 @@ pub fn restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Res
     Ok(())
 }
 
+/// Reports what the repository tracks and how each dotfile stands on this
+/// machine.
+///
+/// Reads only. Unlike the other commands this writes to stdout rather than the
+/// log, because the report *is* the output rather than a note about progress.
+pub fn status(repo: &Path, root: &Path) -> Result<(), String> {
+    let contents = repository_contents(repo)?;
+    if contents.is_empty() {
+        println!("{} tracks nothing yet", repo.display());
+        return Ok(());
+    }
+
+    let mut rows: Vec<(String, PathBuf, Option<String>)> = Vec::new();
+    let mut missing = 0;
+    let mut conflicting = 0;
+
+    for from in contents {
+        let relative_path = path::relative_from_root(repo, &from)?;
+        let to = root.join(&relative_path);
+        let (state, note) = match fs::placement(&from, &to)? {
+            fs::Placement::Linked => ("linked", None),
+            fs::Placement::Copied => ("copied", None),
+            fs::Placement::Missing => {
+                missing += 1;
+                ("missing", None)
+            }
+            fs::Placement::Conflict(reason) => {
+                conflicting += 1;
+                ("conflict", Some(reason))
+            }
+        };
+        rows.push((state.to_owned(), relative_path, note));
+    }
+
+    rows.sort_by(|left, right| left.1.cmp(&right.1));
+    for (state, relative_path, note) in &rows {
+        match note {
+            Some(note) => println!("{:>8}  {}  ({})", state, relative_path.display(), note),
+            None => println!("{:>8}  {}", state, relative_path.display()),
+        }
+    }
+
+    println!();
+    println!(
+        "{} tracked, {} missing, {} conflicting",
+        rows.len(),
+        missing,
+        conflicting
+    );
+    Ok(())
+}
+
 /// Fetches, merges and pushes the repository, adopting `url` as `origin` if
 /// one is given.
 pub fn sync(repo: &Path, url: Option<&str>) -> Result<(), String> {
     let git_repo = git::open(repo)?;
     git::sync(&git_repo, url)?;
-    log::info!("successfully synced dotty repository");
+    println!("synced {}", repo.display());
     Ok(())
 }
 
@@ -213,14 +246,35 @@ pub fn update(repo: &Path) -> Result<(), String> {
     // actually moved, wrote an empty commit on every run.
     if outcome.changed > 0 {
         git::commit(&git_repo, "Updated all submodules")?;
-        log::info!("successfully updated {} submodules", outcome.changed);
+        println!("updated {} submodules", outcome.changed);
     } else if outcome.total > 0 {
-        log::info!("all {} submodules are already up to date", outcome.total);
+        println!("all {} submodules are already up to date", outcome.total);
     } else {
-        log::warn!("there are no submodules to update");
+        println!("there are no submodules to update");
     }
 
     Ok(())
+}
+
+/// Every dotfile the repository holds, as absolute paths.
+///
+/// git's own bookkeeping is skipped, and a submodule counts as a single path
+/// rather than being walked into, matching how it was added.
+fn repository_contents(repo: &Path) -> Result<Vec<PathBuf>, String> {
+    let top_level: Vec<PathBuf> = fs::read_dir(repo)?
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| !matches!(name, ".git" | ".gitmodules"))
+                .unwrap_or(true)
+        })
+        .collect();
+
+    Ok(flatten_paths_to_add(&top_level)?
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect())
 }
 
 /// What a path turned out to be, which decides how it gets tracked.

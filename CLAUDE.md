@@ -35,7 +35,16 @@ Two things to know before writing tests here:
 
 ## CLI structure
 
-Entry point is [src/main.rs](src/main.rs), using `clap` derive macros. Global options (`-r/--repository`, defaulting to `~/.dotty` or `$DOTTY_REPOSITORY`; `-R/--root`, the directory dotfiles live relative to) are parsed once in `Opts`, resolved to canonical paths, then dispatched to a subcommand handler in [src/cmds.rs](src/cmds.rs). Each subcommand (`init`, `clone`, `add`, `restore`, `sync`, `update`) is a thin free function in `cmds.rs` that composes helpers from `src/utils/`.
+Entry point is [src/main.rs](src/main.rs), using `clap` derive macros. Global options (`-r/--repository`, defaulting to `~/.dotty` or `$DOTTY_REPOSITORY`; `-R/--root`, the directory dotfiles live relative to) are parsed once in `Opts`, resolved to canonical paths, then dispatched to a subcommand handler in [src/cmds.rs](src/cmds.rs). Each subcommand (`init`, `clone`, `add`, `restore`, `sync`, `update`, `status`) is a thin free function in `cmds.rs` that composes helpers from `src/utils/`.
+
+### Output convention
+
+**stdout is what the command produced; stderr is everything about how it went.**
+
+- A command's result — the confirmation of what changed, or a report like `status` — is `println!`ed to stdout, unconditionally. It is the answer the user asked for, so it is not hidden behind `-v`.
+- Everything else goes through `log` to stderr: per-path warnings, errors, and the `-v` diagnostics. The logger is configured with `TerminalMode::Stderr` so nothing it emits can contaminate stdout.
+
+This is what keeps `dotty status > managed.txt` and `dotty restore 2>/dev/null` behaving sensibly. New commands should follow it: print the outcome, log the diagnostics.
 
 The `///` comments on the clap structs are rendered as `--help` text, so editing them changes user-facing output.
 
