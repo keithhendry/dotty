@@ -1,3 +1,23 @@
+//! The git half of dotty, wrapping [`git2`].
+//!
+//! Everything git does for dotty happens through libgit2 rather than by
+//! shelling out, so there is no dependency on a `git` binary being installed.
+//! Authentication with remotes is delegated to the user's configured git
+//! credential helper, which is why an existing `git push` to GitHub is enough
+//! to make `dotty sync` work.
+//!
+//! # Path conventions
+//!
+//! Functions that touch the index or submodules take paths **relative to the
+//! repository's working directory**, never absolute ones. libgit2 requires it,
+//! and it is also the natural form here, since a dotfile has the same relative
+//! path under the root and under the repository.
+//!
+//! The catch is that a relative path is only meaningful to libgit2's index. Any
+//! plain filesystem or [`Repository::open`] call has to resolve it against
+//! [`Repository::workdir`] first, or it will silently be interpreted relative to
+//! the current process's working directory instead.
+
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use git2::{
     AnnotatedCommit, AutotagOption, Commit, Config, Cred, CredentialType, ErrorCode, FetchOptions,
@@ -7,6 +27,10 @@ use git2::{
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Opens the repository at `path`, creating it first if it is not one yet.
+///
+/// This makes `dotty init` idempotent: running it against an existing
+/// repository is a no-op rather than an error.
 pub fn init_or_open(path: &Path) -> Result<Repository, String> {
     git_helper(
         || {
@@ -28,6 +52,11 @@ pub fn init_or_open(path: &Path) -> Result<Repository, String> {
     )
 }
 
+/// Clones `url` into `path`, then checks out every submodule recursively.
+///
+/// The recursive step matters for dotfiles: plugin managers and prompt themes
+/// are tracked as submodules, and a clone without them leaves a repository full
+/// of empty directories.
 pub fn clone_recurse(path: &Path, url: &str) -> Result<Repository, String> {
     git_helper(
         || {
@@ -69,6 +98,7 @@ pub fn clone_recurse(path: &Path, url: &str) -> Result<Repository, String> {
     )
 }
 
+/// Opens an existing repository, failing if `path` is not one.
 pub fn open(path: &Path) -> Result<Repository, String> {
     log::trace!("opening git repository {}", path.display());
     git_helper(
@@ -77,6 +107,10 @@ pub fn open(path: &Path) -> Result<Repository, String> {
     )
 }
 
+/// Reports whether `path` is a git repository.
+///
+/// This is what decides that a directory should become a submodule rather than
+/// being walked file by file when it is added.
 pub fn check_open(path: &Path) -> bool {
     match Repository::open(path) {
         Ok(_) => {
@@ -87,6 +121,11 @@ pub fn check_open(path: &Path) -> bool {
     }
 }
 
+/// Resets the index to `HEAD`, leaving the working tree untouched.
+///
+/// Commands stage their own paths and then commit, so they start from a clean
+/// index to avoid sweeping up unrelated changes a user had staged by hand. On a
+/// repository with no commits yet there is nothing to reset, and this succeeds.
 pub fn unstage_all(repo: &Repository) -> Result<(), String> {
     git_helper(
         || {
@@ -110,6 +149,11 @@ pub fn unstage_all(repo: &Repository) -> Result<(), String> {
     )
 }
 
+/// Stages every path in `paths`, descending into plain directories.
+///
+/// Paths are relative to the repository's working directory (see the [module
+/// documentation](self#path-conventions)). A path that is itself a git
+/// repository is staged as a single submodule entry rather than being walked.
 pub fn stage_all_paths(repo: &Repository, paths: &Vec<PathBuf>) -> Result<(), String> {
     log::debug!(
         "staging {} paths in git repository {}",
@@ -136,6 +180,11 @@ pub fn stage_all_paths(repo: &Repository, paths: &Vec<PathBuf>) -> Result<(), St
     )
 }
 
+/// Commits whatever is currently staged, on top of `HEAD`.
+///
+/// Handles the unborn-branch case, so the first commit in a fresh repository
+/// works without special casing. The author and committer come from the user's
+/// git configuration, so dotty commits look like any other.
 pub fn commit(repo: &Repository, message: &str) -> Result<Oid, String> {
     log::debug!(
         "creating commit in git repository {} with message {}",
@@ -172,6 +221,13 @@ pub fn commit(repo: &Repository, message: &str) -> Result<Oid, String> {
     )
 }
 
+/// Registers already-cloned git repositories as submodules of `repo`.
+///
+/// Each path is relative to the repository's working directory (see the [module
+/// documentation](self#path-conventions)) and must already hold the submodule's
+/// own repository — dotty moves the directory into place before calling this.
+/// The submodule's `origin` URL is reused as the submodule URL, so a repository
+/// without an `origin` remote cannot be added.
 pub fn add_submodules(repo: &Repository, submodules: &Vec<PathBuf>) -> Result<(), String> {
     log::debug!(
         "adding {} submodules to git repository {}",
@@ -210,6 +266,15 @@ pub fn add_submodules(repo: &Repository, submodules: &Vec<PathBuf>) -> Result<()
     Ok(())
 }
 
+/// Fetches, merges and pushes the current branch, in that order.
+///
+/// Passing a `url` points `origin` at it, creating or updating the remote as
+/// needed, which is how the first `dotty sync <url>` adopts a remote.
+///
+/// Refuses to run when the working tree is dirty, and stops at a merge conflict
+/// rather than trying to resolve it — leaving the conflict checked out for the
+/// user to sort out with git directly. A fast-forward is taken where possible,
+/// otherwise a merge commit is created.
 pub fn sync(repo: &Repository, url: Option<&str>) -> Result<(), String> {
     git_helper(
         || {
@@ -273,6 +338,11 @@ pub fn sync(repo: &Repository, url: Option<&str>) -> Result<(), String> {
     )
 }
 
+/// Fast-forwards every submodule to its remote's default branch.
+///
+/// This is how a plugin or theme tracked as a submodule gets upgraded. The
+/// updated submodule pointers are staged but not committed; the caller decides
+/// whether there was anything worth committing, based on the returned count.
 pub fn update_submodules(repo: &Repository) -> Result<i32, String> {
     git_helper(
         || {
@@ -344,6 +414,11 @@ pub fn update_submodules(repo: &Repository) -> Result<i32, String> {
     )
 }
 
+/// Runs a libgit2 operation, converting any [`git2::Error`] into the module's
+/// `String` error via `err_func`.
+///
+/// Keeps the error-formatting boilerplate in one place, and keeps the happy
+/// path readable by letting the body use `?` on `git2` results.
 fn git_helper<G, E, A>(git_func: G, err_func: E) -> Result<A, String>
 where
     G: FnOnce() -> Result<A, git2::Error>,
@@ -352,6 +427,7 @@ where
     git_func().map_err(err_func)
 }
 
+/// Returns the URL of the repository's `origin` remote.
 fn get_origin_url(repo: &Repository) -> Result<String, String> {
     let remote = match repo.find_remote("origin") {
         Ok(remote) => remote.url().map(|p| p.to_owned()),
@@ -372,6 +448,11 @@ fn get_origin_url(repo: &Repository) -> Result<String, String> {
     }
 }
 
+/// Resolves the remote to work with, optionally repointing `origin` at `url`.
+///
+/// With no `url`, the existing `origin` is used. With one, `origin` is created
+/// if missing and updated if it points somewhere else, so re-running sync
+/// against a new URL moves the remote rather than failing.
 fn get_remote<'a>(repo: &'a Repository, url: Option<&str>) -> Result<Remote<'a>, git2::Error> {
     match url {
         Some(url) => {
@@ -397,6 +478,8 @@ fn get_remote<'a>(repo: &'a Repository, url: Option<&str>) -> Result<Remote<'a>,
     }
 }
 
+/// Builds remote callbacks that authenticate via the user's git credential
+/// helper, so dotty reuses whatever credentials `git` itself already uses.
 fn create_callbacks<'a>() -> RemoteCallbacks<'a> {
     let mut callbacks = RemoteCallbacks::new();
     callbacks.credentials(
@@ -407,6 +490,10 @@ fn create_callbacks<'a>() -> RemoteCallbacks<'a> {
     callbacks
 }
 
+/// Returns the commit at `HEAD`, or `None` when the branch is unborn.
+///
+/// A repository created by `dotty init` has no commits until the first `add`,
+/// so this distinguishes "no commits yet" from a genuine failure.
 fn find_last_commit(repo: &Repository) -> Result<Option<Commit<'_>>, git2::Error> {
     match repo.head() {
         Ok(head) => Ok(Some(head.resolve()?.peel_to_commit()?)),
@@ -415,6 +502,7 @@ fn find_last_commit(repo: &Repository) -> Result<Option<Commit<'_>>, git2::Error
     }
 }
 
+/// Returns the short name of the currently checked-out branch.
 fn get_branch_name(repo: &Repository) -> Result<String, git2::Error> {
     let head = repo.head()?.resolve()?;
     match head
@@ -430,6 +518,11 @@ fn get_branch_name(repo: &Repository) -> Result<String, git2::Error> {
     }
 }
 
+/// Stages `path`, descending into it if it is a plain directory.
+///
+/// A nested git repository is staged as a single submodule entry instead of
+/// being descended into, which is what keeps a plugin's own history out of the
+/// dotfiles repository.
 fn stage_path_recursive(index: &mut Index, path: &Path) -> Result<(), git2::Error> {
     if path.is_dir() {
         if Repository::open(path).is_ok() {
@@ -472,6 +565,8 @@ fn stage_path_recursive(index: &mut Index, path: &Path) -> Result<(), git2::Erro
     Ok(())
 }
 
+/// Merges `fetch_commit` into the current branch, fast-forwarding when the
+/// history allows it and creating a merge commit when it does not.
 fn merge(
     repo: &Repository,
     branch: &str,
@@ -494,6 +589,7 @@ fn merge(
     Ok(())
 }
 
+/// Moves `lb` straight to `rc` and checks the result out.
 fn fast_forward(
     repo: &Repository,
     lb: &mut Reference,
@@ -513,6 +609,10 @@ fn fast_forward(
     Ok(())
 }
 
+/// Creates a merge commit joining the local and remote commits.
+///
+/// Conflicts are checked out into the working tree and reported as an error;
+/// dotty deliberately leaves resolving them to the user and git.
 fn normal_merge(
     repo: &Repository,
     local: &AnnotatedCommit,
@@ -549,6 +649,7 @@ fn normal_merge(
     Ok(())
 }
 
+/// Checks out every submodule, and every submodule of those, breadth first.
 fn update_submodules_recursive(
     repo: &Repository,
     init: bool,

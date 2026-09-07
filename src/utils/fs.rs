@@ -1,3 +1,17 @@
+//! The filesystem half of dotty: moving files, and linking them back.
+//!
+//! Two operations carry the whole design. [`move_then_symlink`] relocates a
+//! file into the repository and leaves a symlink in its place, so tools keep
+//! finding their configuration exactly where they expect it. [`restore`] does
+//! the reverse on a new machine.
+//!
+//! Both are deliberately conservative: anything already present that dotty did
+//! not put there is an error rather than something to overwrite, unless the
+//! caller supplies somewhere to move it aside to.
+//!
+//! Symlinks are created through `std::os::unix`, so this module is unix only —
+//! matching dotty's supported targets.
+
 use super::string::random_string;
 use std::env;
 use std::fs;
@@ -5,6 +19,14 @@ use std::io::ErrorKind;
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 
+/// Moves `from` into the repository at `to`, then symlinks `from` back to it.
+///
+/// Returns `Ok(true)` when the move happened, and `Ok(false)` when `from` is
+/// already a symlink pointing at `to` — that is, when the file has been added
+/// before and there is nothing to do. Any other pre-existing `to` is an error,
+/// since overwriting it would discard whatever the repository already tracked.
+///
+/// Missing parent directories on either side are created as needed.
 pub fn move_then_symlink(from: &Path, to: &Path) -> Result<bool, String> {
     if to.exists() {
         if let Some(metadata) = symlink_metadata(from)? {
@@ -29,6 +51,19 @@ pub fn move_then_symlink(from: &Path, to: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Places the repository's copy of a dotfile at `to`.
+///
+/// With `symlinks` set, `to` becomes a symlink pointing at `from`; otherwise
+/// `from` is copied to `to`, recursively for directories. Copying is what you
+/// want on a machine that should not keep depending on the repository being
+/// present — a container, or a machine you are only borrowing.
+///
+/// Whatever is already at `to` decides the outcome:
+///
+/// - a symlink that already points at `from` is left alone in symlink mode, and
+///   replaced in copy mode;
+/// - anything else is moved to `overwrite`, or reported as an error when no
+///   `overwrite` path was given, so that existing files are never silently lost.
 pub fn restore(
     from: &Path,
     to: &Path,
@@ -90,6 +125,10 @@ pub fn restore(
     }
 }
 
+/// A holding area for files displaced by `dotty restore --overwrite`.
+///
+/// The directory removes itself on drop, but only while it is still empty, so
+/// anything actually moved aside survives for the user to recover.
 pub struct OverwriteTempDir {
     temp_dir: PathBuf,
 }
@@ -103,11 +142,14 @@ impl Drop for OverwriteTempDir {
 }
 
 impl OverwriteTempDir {
+    /// Returns where a dotfile with the given repository-relative path should
+    /// be moved aside to. Creates nothing; it only builds the path.
     pub fn entry(&self, path: &Path) -> PathBuf {
         self.temp_dir.join(path)
     }
 }
 
+/// Creates a uniquely named holding directory under the system temp directory.
 pub fn create_overwrite_temp_dir(prefix: &str) -> Result<OverwriteTempDir, String> {
     let name = prefix.to_owned() + &random_string(7);
     let temp_dir = env::temp_dir().join(name);
@@ -122,6 +164,7 @@ pub fn create_overwrite_temp_dir(prefix: &str) -> Result<OverwriteTempDir, Strin
     Ok(OverwriteTempDir { temp_dir })
 }
 
+/// Removes an empty directory.
 pub fn remove_dir(dir: &Path) -> Result<(), String> {
     match fs::remove_dir(dir) {
         Ok(_) => Ok(()),
@@ -129,6 +172,7 @@ pub fn remove_dir(dir: &Path) -> Result<(), String> {
     }
 }
 
+/// Reports whether `dir` has no entries.
 pub fn is_empty(dir: &Path) -> Result<bool, String> {
     match dir.read_dir() {
         Ok(mut read_dir) => Ok(read_dir.next().is_none()),
@@ -140,6 +184,7 @@ pub fn is_empty(dir: &Path) -> Result<bool, String> {
     }
 }
 
+/// Lists the immediate children of `dir` as full paths, in no defined order.
 pub fn read_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut paths = Vec::new();
     match dir.read_dir() {
