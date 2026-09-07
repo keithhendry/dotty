@@ -49,11 +49,31 @@ pub fn clone(repo: &Path, url: &str) -> Result<(), String> {
 /// is logged and stepped over rather than aborting the whole run. Everything
 /// that did move lands in a single commit.
 pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String> {
+    let flattened = flatten_paths_to_add(paths)?;
+
+    // Everything past this point rearranges real files, so whatever can be
+    // known to fail is established first. Discovering the repository does not
+    // exist, or that git has no identity to commit with, used to happen after
+    // the files had been moved and symlinked -- leaving them stranded, and a
+    // retry doing nothing because they now looked like they were managed.
+    let git_repo = git::open(repo)?;
+    git::check_signature(&git_repo)?;
+
     let mut to_commit: Vec<PathBuf> = Vec::new();
     let mut submodules: Vec<PathBuf> = Vec::new();
 
-    for (path, path_type) in flatten_paths_to_add(paths)? {
-        match move_to_dotty_repo(repo, root, &path) {
+    for (path, path_type) in flattened {
+        // A submodule records where it came from, so one with no origin cannot
+        // be added at all. Finding that out before moving it keeps it from
+        // taking the rest of the run down with it.
+        if path_type == PathType::GitRepo {
+            if let Err(err) = git::origin_url(&path) {
+                log::warn!("skipping {} - {}", path.display(), err);
+                continue;
+            }
+        }
+
+        match move_to_dotty_repo(&git_repo, repo, root, &path) {
             Ok(Some(relative_path)) => {
                 if path_type == PathType::GitRepo {
                     submodules.push(relative_path.clone())
@@ -71,7 +91,6 @@ pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String>
     }
 
     if !to_commit.is_empty() {
-        let git_repo = git::open(repo)?;
         git::unstage_all(&git_repo)?;
         git::add_submodules(&git_repo, &submodules)?;
         git::stage_all_paths(&git_repo, &to_commit)?;
@@ -218,14 +237,31 @@ fn flatten_paths_to_add(paths: &Vec<PathBuf>) -> Result<Vec<(PathBuf, PathType)>
 ///
 /// Returns the path relative to the root — the form everything downstream
 /// wants — or `None` when the file was already managed and nothing moved.
-fn move_to_dotty_repo(repo: &Path, root: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
+fn move_to_dotty_repo(
+    git_repo: &git2::Repository,
+    repo: &Path,
+    root: &Path,
+    path: &Path,
+) -> Result<Option<PathBuf>, String> {
     // `path` arrives canonicalized, so anything inside the repository is
-    // already managed: adding a file a second time follows the symlink left by
+    // already there: adding a file a second time follows the symlink left by
     // the first add straight back here. Moving it again would bury it one level
     // deeper on every run.
     if path.starts_with(repo) {
-        log::debug!("{} is already in the repository", path.display());
-        return Ok(None);
+        let relative_path = path::relative_from_root(repo, path)?;
+        // Being in the repository is not the same as being committed. A file
+        // left behind by an add that failed before committing belongs in this
+        // commit, which is what makes running the command again put things
+        // right rather than silently doing nothing.
+        if git::is_committed(git_repo, &relative_path) {
+            log::debug!("{} is already managed", path.display());
+            return Ok(None);
+        }
+        log::debug!(
+            "{} is in the repository but was never committed",
+            path.display()
+        );
+        return Ok(Some(relative_path));
     }
 
     let relative_path = path::relative_from_root(root, path)?;
