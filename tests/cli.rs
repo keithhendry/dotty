@@ -993,6 +993,115 @@ fn status_on_an_empty_repository_says_so() {
     );
 }
 
+// ---------------------------------------------------------------- dry run
+
+// The point of a dry run is that it is a promise about the real run, so each
+// of these checks the machine is untouched afterwards.
+#[test]
+fn add_dry_run_changes_nothing() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".zshrc", "shell\n");
+
+    let output = machine.dotty(&["add", "--dry-run", ".zshrc"]);
+    assert_ok(&output);
+
+    assert!(
+        text(&output).contains("would add .zshrc"),
+        "{}",
+        text(&output)
+    );
+    assert!(
+        !is_symlink(&machine.path(".zshrc")),
+        "nothing should have moved"
+    );
+    assert!(!machine.repo().join(".zshrc").exists());
+    assert_eq!(
+        git_ok(
+            &machine.home,
+            &["-C", machine.repo().to_str().unwrap(), "ls-files"]
+        ),
+        ""
+    );
+}
+
+#[test]
+fn restore_dry_run_changes_nothing_and_reports_what_blocks_it() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".dotty/.zshrc", "from the repository\n");
+    machine.write(".zshrc", "already here\n");
+
+    let output = machine.dotty(&["restore", "--dry-run"]);
+    assert_ok(&output);
+
+    assert!(text(&output).contains("--overwrite"), "{}", text(&output));
+    assert_eq!(machine.read(".zshrc"), "already here\n");
+
+    // With --overwrite it plans the move instead of refusing, still changing nothing.
+    let output = machine.dotty(&["restore", "--dry-run", "--overwrite"]);
+    assert_ok(&output);
+    assert!(text(&output).contains("moving aside"), "{}", text(&output));
+    assert_eq!(machine.read(".zshrc"), "already here\n");
+}
+
+#[test]
+fn remove_dry_run_changes_nothing() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".zshrc", "shell\n");
+    assert_ok(&machine.dotty(&["add", ".zshrc"]));
+
+    let output = machine.dotty(&["remove", "--dry-run", ".zshrc"]);
+    assert_ok(&output);
+
+    assert!(
+        text(&output).contains("would remove .zshrc"),
+        "{}",
+        text(&output)
+    );
+    assert!(
+        is_symlink(&machine.path(".zshrc")),
+        "it should still be managed"
+    );
+    assert_eq!(
+        git_ok(
+            &machine.home,
+            &["-C", machine.repo().to_str().unwrap(), "ls-files"]
+        ),
+        ".zshrc"
+    );
+}
+
+// Displaced files are the user's real configuration; the system temp directory
+// is somewhere the operating system clears out on its own schedule.
+#[test]
+fn overwrite_backs_up_beside_the_dotfiles() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".dotty/.zshrc", "from the repository\n");
+    machine.write(".zshrc", "already here\n");
+
+    assert_ok(&machine.dotty(&["restore", "--overwrite"]));
+
+    let backup = fs::read_dir(&machine.home)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with(".dotty-backup-"))
+                .unwrap_or(false)
+        })
+        .expect("a backup directory should sit beside the dotfiles");
+
+    assert_eq!(
+        fs::read_to_string(backup.join(".zshrc")).unwrap(),
+        "already here\n"
+    );
+}
+
 // ---------------------------------------------------------------- options
 
 #[test]
