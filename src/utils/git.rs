@@ -202,7 +202,7 @@ pub fn add_submodules(repo: &Repository, submodules: &Vec<PathBuf>) -> Result<()
             return Err(format!(
                 "failed to add git submodule {} with url {} - {}",
                 path.display(),
-                &url,
+                url,
                 err
             ));
         }
@@ -364,8 +364,8 @@ fn get_origin_url(repo: &Repository) -> Result<String, String> {
         }
     };
     match remote {
-        Some(remote) => Ok(remote),
-        None => Err(format!(
+        Ok(remote) => Ok(remote),
+        Err(_) => Err(format!(
             "remote origin url was not found for {}",
             repo.path().display()
         )),
@@ -377,7 +377,7 @@ fn get_remote<'a>(repo: &'a Repository, url: Option<&str>) -> Result<Remote<'a>,
         Some(url) => {
             log::trace!("using remote {}", url);
             if let Ok(remote) = repo.find_remote("origin") {
-                if let Some(remote_url) = remote.url() {
+                if let Ok(remote_url) = remote.url() {
                     return match remote_url.eq(url) {
                         true => {
                             log::trace!("remotes match");
@@ -416,17 +416,18 @@ fn find_last_commit(repo: &Repository) -> Result<Option<Commit<'_>>, git2::Error
 }
 
 fn get_branch_name(repo: &Repository) -> Result<String, git2::Error> {
-    repo.head()?
-        .resolve()?
+    let head = repo.head()?.resolve()?;
+    match head
         .name()
+        .ok()
         .and_then(|name| name.strip_prefix("refs/heads/"))
-        .map(|name| Ok(name.to_owned()))
-        .unwrap_or_else(|| {
-            Err(git2::Error::from_str(&format!(
-                "branch name could not be resolved in git repo {}",
-                repo.path().display()
-            )))
-        })
+    {
+        Some(name) => Ok(name.to_owned()),
+        None => Err(git2::Error::from_str(&format!(
+            "branch name could not be resolved in git repo {}",
+            repo.path().display()
+        ))),
+    }
 }
 
 fn stage_path_recursive(index: &mut Index, path: &Path) -> Result<(), git2::Error> {
@@ -499,8 +500,8 @@ fn fast_forward(
     rc: &AnnotatedCommit,
 ) -> Result<(), git2::Error> {
     let name = match lb.name() {
-        Some(s) => s.to_string(),
-        None => String::from_utf8_lossy(lb.name_bytes()).to_string(),
+        Ok(name) => name.to_string(),
+        Err(_) => String::from_utf8_lossy(lb.name_bytes()).to_string(),
     };
     log::debug!("fast-forward {} to id {}", name, rc.id());
     lb.set_target(
@@ -663,7 +664,7 @@ mod tests {
         let statuses = repo.statuses(None).unwrap();
         assert!(statuses
             .iter()
-            .any(|s| s.path() == Some("file2.txt") && s.status().is_wt_new()));
+            .any(|s| s.path().ok() == Some("file2.txt") && s.status().is_wt_new()));
         assert_eq!(
             repo.head().unwrap().peel_to_commit().unwrap().id(),
             head_commit.id()

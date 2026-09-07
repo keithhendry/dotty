@@ -8,17 +8,22 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "4.5.23", features = ["derive", "env"] }
-git2 = "0.19.0"
+clap = { version = "4.6.6", features = ["derive", "env"] }
+# `https` and `ssh` are required to talk to remotes such as GitHub, and both
+# enable `cred`, which backs authentication via the user's git credential
+# helper. They are NOT enabled by default as of git2 0.21.
+git2 = { version = "0.21.0", features = ["https", "ssh"] }
 home-dir = "0.1.0"
-libgit2-sys = "0.17.0"
-libz-sys = { version = "1.1.20", default-features = false, features = ["libc", "static"] }
-log = "0.4.22"
-openssl = { version = "0.10.68", features = ["vendored"] }
-rand = "0.8.5"
-serde = { version = "1.0.217", features = ["derive"] }
-serde_yaml = "0.9.34"
+log = "0.4.34"
+rand = "0.10.2"
 simplelog = { version = "0.12.2", features = ["paris"] }
 
+# Not used directly. libz-sys and openssl are pinned to statically linked and
+# vendored builds respectively, so released binaries run on machines without
+# matching system libraries; libgit2-sys is pinned to keep it in step with git2.
+libgit2-sys = "0.18.8"
+libz-sys = { version = "1.1.29", default-features = false, features = ["libc", "static"] }
+openssl = { version = "0.10.81", features = ["vendored"] }
+
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.27.0"
