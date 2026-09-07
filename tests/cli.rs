@@ -793,6 +793,81 @@ fn update_does_nothing_when_there_are_no_submodules() {
     );
 }
 
+// ---------------------------------------------------------------- status
+
+#[test]
+fn status_reports_every_state_a_dotfile_can_be_in() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+
+    // managed correctly
+    machine.write(".zshrc", "shell\n");
+    assert_ok(&machine.dotty(&["add", ".zshrc"]));
+    // in the repository but not on the machine
+    machine.write(".dotty/.gitconfig_extra", "git\n");
+    // a copy rather than a symlink
+    machine.write(".dotty/.profile", "profile\n");
+    machine.write(".profile", "profile\n");
+    // something else is in the way
+    machine.write(".dotty/.tmux.conf", "tmux\n");
+    machine.write(".tmux.conf", "not the same\n");
+
+    let output = machine.dotty(&["status"]);
+    assert_ok(&output);
+    let report = text(&output);
+
+    assert!(
+        report.contains("linked") && report.contains(".zshrc"),
+        "{report}"
+    );
+    assert!(
+        report.contains("missing") && report.contains(".gitconfig_extra"),
+        "{report}"
+    );
+    assert!(
+        report.contains("copied") && report.contains(".profile"),
+        "{report}"
+    );
+    assert!(
+        report.contains("conflict") && report.contains("a different file"),
+        "{report}"
+    );
+    assert!(
+        report.contains("4 tracked, 1 missing, 1 conflicting"),
+        "{report}"
+    );
+}
+
+// It reports; it must not put anything right behind the user's back.
+#[test]
+fn status_changes_nothing() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".dotty/.zshrc", "shell\n");
+
+    assert_ok(&machine.dotty(&["status"]));
+
+    assert!(
+        !machine.path(".zshrc").exists(),
+        "status should not have restored anything"
+    );
+}
+
+#[test]
+fn status_on_an_empty_repository_says_so() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+
+    let output = machine.dotty(&["status"]);
+
+    assert_ok(&output);
+    assert!(
+        text(&output).contains("tracks nothing yet"),
+        "{}",
+        text(&output)
+    );
+}
+
 // ---------------------------------------------------------------- options
 
 #[test]
@@ -864,7 +939,9 @@ fn help_lists_every_subcommand() {
     assert_ok(&output);
 
     let help = text(&output);
-    for subcommand in ["init", "clone", "add", "restore", "sync", "update"] {
+    for subcommand in [
+        "init", "clone", "add", "restore", "sync", "update", "status",
+    ] {
         assert!(
             help.contains(subcommand),
             "{subcommand} missing from --help"

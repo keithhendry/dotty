@@ -35,7 +35,9 @@ Two things to know before writing tests here:
 
 ## CLI structure
 
-Entry point is [src/main.rs](src/main.rs), using `clap` derive macros. Global options (`-r/--repository`, defaulting to `~/.dotty` or `$DOTTY_REPOSITORY`; `-R/--root`, the directory dotfiles live relative to) are parsed once in `Opts`, resolved to canonical paths, then dispatched to a subcommand handler in [src/cmds.rs](src/cmds.rs). Each subcommand (`init`, `clone`, `add`, `restore`, `sync`, `update`) is a thin free function in `cmds.rs` that composes helpers from `src/utils/`.
+Entry point is [src/main.rs](src/main.rs), using `clap` derive macros. Global options (`-r/--repository`, defaulting to `~/.dotty` or `$DOTTY_REPOSITORY`; `-R/--root`, the directory dotfiles live relative to) are parsed once in `Opts`, resolved to canonical paths, then dispatched to a subcommand handler in [src/cmds.rs](src/cmds.rs). Each subcommand (`init`, `clone`, `add`, `restore`, `sync`, `update`, `status`) is a thin free function in `cmds.rs` that composes helpers from `src/utils/`.
+
+`status` is the one command whose output is the point rather than a note about progress, so it prints to stdout directly instead of going through the logger — everything else stays on `log`.
 
 The `///` comments on the clap structs are rendered as `--help` text, so editing them changes user-facing output.
 

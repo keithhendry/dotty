@@ -13,7 +13,7 @@ mod cmds;
 mod utils;
 
 use clap::{ArgAction, Parser, ValueEnum};
-use cmds::{add, clone, init, restore, sync, update};
+use cmds::{add, clone, init, restore, status, sync, update};
 use simplelog::*;
 use std::path::PathBuf;
 use std::process;
@@ -57,6 +57,8 @@ enum SubCommand {
     Sync(Sync),
     /// Updates the submodules in the dotty repository
     Update(Update),
+    /// Shows what is tracked and how it stands on this machine
+    Status(Status),
 }
 
 #[derive(Parser)]
@@ -105,6 +107,9 @@ struct Sync {
 
 #[derive(Parser)]
 struct Update {}
+
+#[derive(Parser)]
+struct Status {}
 
 /// Sets up terminal logging, with `-v` raising the level each time it is given:
 /// warnings by default, then info, debug and trace.
@@ -165,6 +170,7 @@ fn run(opts: &Opts) -> Result<(), String> {
         ),
         SubCommand::Sync(sync_cmd) => sync(&repo, sync_cmd.url.as_deref()),
         SubCommand::Update(_) => update(&repo),
+        SubCommand::Status(_) => status(&repo, &root),
     }
 }
 
