@@ -2,6 +2,8 @@ name: Builds
 
 on: push
 
+# Job names are required status checks on main, so renaming one means updating
+# the branch protection rule to match.
 jobs:
   build-darwin-arm64:
     name: Build MacOS arm64
@@ -14,6 +16,12 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           rustup show
+      # Testing and building the same target reuses one set of compiled
+      # dependencies. Splitting them across jobs, or leaving the target off the
+      # test command, builds vendored OpenSSL and libgit2 twice over.
+      - name: Test
+        run: |
+          cargo test --locked --target aarch64-apple-darwin
       - name: Build
         run: |
           cargo build --locked --target aarch64-apple-darwin
@@ -31,6 +39,8 @@ jobs:
     name: Build MacOS amd64
     runs-on: macos-latest
 
+    # Cross compiled from an arm64 runner, so the test suite cannot run here.
+    # It runs natively in the arm64 and linux jobs instead.
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -62,6 +72,9 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           rustup show
+      - name: Test
+        run: |
+          cargo test --locked --target x86_64-unknown-linux-gnu
       - name: Build
         run: |
           cargo build --locked --target x86_64-unknown-linux-gnu
@@ -74,28 +87,6 @@ jobs:
         with:
           name: build-linux-amd64
           path: target/x86_64-unknown-linux-gnu/debug/dotty-linux-amd64.tar.gz
-
-  test:
-    name: Test ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          rustup show
-      - name: Test
-        run: |
-          cargo test --locked
 
   lint:
     name: Lint
