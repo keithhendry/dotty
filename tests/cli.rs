@@ -571,6 +571,43 @@ fn update_fast_forwards_a_submodule_and_commits_the_new_pointer() {
     );
 }
 
+// Counting every submodule as "updated" rather than only the ones that moved
+// wrote an empty commit on every single run.
+#[test]
+fn update_does_not_commit_when_the_submodule_is_already_current() {
+    let machine = Machine::new();
+    let upstream = Remote::new(&machine.home);
+
+    let source = Machine::new();
+    source.plugin(".src", &upstream.url(), "version 1\n");
+    let source_dir = source.path(".src");
+    let source_dir = source_dir.to_str().unwrap();
+    git_ok(&source.home, &["-C", source_dir, "push", "origin", "main"]);
+
+    let installed = machine.path(".vim/plugged/nifty");
+    fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    git_ok(
+        &machine.home,
+        &["clone", &upstream.url(), installed.to_str().unwrap()],
+    );
+    assert_ok(&machine.dotty(&["init"]));
+    assert_ok(&machine.dotty(&["add", ".vim/plugged/nifty"]));
+
+    let repo = machine.repo();
+    let repo = repo.to_str().unwrap();
+    let before = git_ok(&machine.home, &["-C", repo, "rev-list", "--count", "HEAD"]);
+
+    for _ in 0..3 {
+        assert_ok(&machine.dotty(&["update"]));
+    }
+
+    assert_eq!(
+        git_ok(&machine.home, &["-C", repo, "rev-list", "--count", "HEAD"]),
+        before,
+        "updating with nothing new upstream should not commit"
+    );
+}
+
 #[test]
 fn update_does_nothing_when_there_are_no_submodules() {
     let machine = Machine::new();

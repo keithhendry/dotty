@@ -339,15 +339,24 @@ pub fn sync(repo: &Repository, url: Option<&str>) -> Result<(), String> {
     )
 }
 
+/// What [`update_submodules`] found and did.
+#[derive(Debug, Default, PartialEq)]
+pub struct SubmoduleUpdate {
+    /// How many submodules the repository has.
+    pub total: usize,
+    /// How many of them moved to a newer commit.
+    pub changed: usize,
+}
+
 /// Fast-forwards every submodule to its remote's default branch.
 ///
 /// This is how a plugin or theme tracked as a submodule gets upgraded. The
 /// updated submodule pointers are staged but not committed; the caller decides
 /// whether there was anything worth committing, based on the returned count.
-pub fn update_submodules(repo: &Repository) -> Result<i32, String> {
+pub fn update_submodules(repo: &Repository) -> Result<SubmoduleUpdate, String> {
     git_helper(
         || {
-            let mut updated: i32 = 0;
+            let mut outcome = SubmoduleUpdate::default();
 
             for mut submodule in repo.submodules()? {
                 log::debug!(
@@ -382,12 +391,26 @@ pub fn update_submodules(repo: &Repository) -> Result<i32, String> {
                 let fetch_head = submodule_repo.find_reference("FETCH_HEAD")?;
                 let fetch_commit = submodule_repo.reference_to_annotated_commit(&fetch_head)?;
 
+                // The commit the submodule sits at is what the parent repository
+                // records, so comparing it either side of the fast forward is
+                // what decides whether there is anything to commit.
+                let before = submodule_head(&submodule_repo);
+
                 let mut branch_reference =
                     submodule_repo.find_reference(default_branch_ref_name)?;
                 fast_forward(&submodule_repo, &mut branch_reference, &fetch_commit)?;
 
                 submodule.add_to_index(false)?;
-                updated += 1;
+
+                outcome.total += 1;
+                if submodule_head(&submodule_repo) != before {
+                    outcome.changed += 1;
+                } else {
+                    log::debug!(
+                        "submodule {} was already up to date",
+                        submodule.name().unwrap_or("unknown")
+                    );
+                }
 
                 remote.disconnect()?;
 
@@ -399,11 +422,11 @@ pub fn update_submodules(repo: &Repository) -> Result<i32, String> {
                 )?;
             }
 
-            if updated > 0 {
+            if outcome.changed > 0 {
                 repo.index()?.write()?;
             }
 
-            Ok(updated)
+            Ok(outcome)
         },
         |err| {
             format!(
@@ -566,6 +589,12 @@ fn create_callbacks<'a>() -> RemoteCallbacks<'a> {
         },
     );
     callbacks
+}
+
+/// The commit a submodule is checked out at, which is the value its parent
+/// repository stores. `None` when it has no resolvable HEAD.
+fn submodule_head(repo: &Repository) -> Option<Oid> {
+    repo.head().ok().and_then(|head| head.target())
 }
 
 /// Returns the commit at `HEAD`, or `None` when the branch is unborn.
@@ -1075,12 +1104,30 @@ mod tests {
         commit_file(&sub_seed_repo, &sub_seed_dir, "plugin.vim", "v2", "update");
         sync(&sub_seed_repo, None).unwrap();
 
-        let updated = update_submodules(&repo).unwrap();
+        let outcome = update_submodules(&repo).unwrap();
 
-        assert_eq!(updated, 1);
+        assert_eq!(
+            outcome,
+            SubmoduleUpdate {
+                total: 1,
+                changed: 1
+            }
+        );
         assert_eq!(
             fs::read_to_string(sub_dir.join("plugin.vim")).unwrap(),
             "v2"
+        );
+
+        // Running again with nothing new upstream must report the submodule as
+        // unchanged, or the caller writes an empty commit every time.
+        let outcome = update_submodules(&repo).unwrap();
+
+        assert_eq!(
+            outcome,
+            SubmoduleUpdate {
+                total: 1,
+                changed: 0
+            }
         );
     }
 }
