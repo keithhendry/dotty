@@ -1,8 +1,16 @@
+//! One function per subcommand, composing the helpers in [`crate::utils`].
+//!
+//! Every command takes `repo` — the dotty repository — and, where it needs to
+//! know about the machine's own files, `root`, the directory dotfiles are
+//! tracked relative to (usually the user's home directory). Both are absolute,
+//! canonical paths by the time they arrive here; `main` resolves them once.
+
 use crate::utils::fs;
 use crate::utils::git;
 use crate::utils::path;
 use std::path::{Path, PathBuf};
 
+/// Creates an empty dotty repository, or leaves an existing one alone.
 pub fn init(repo: &Path) -> Result<(), String> {
     git::init_or_open(repo)?;
 
@@ -13,6 +21,10 @@ pub fn init(repo: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Clones an existing dotty repository, submodules included.
+///
+/// This only fetches the repository. Nothing is put in place on the machine
+/// until [`restore`] is run, so a clone is safe to inspect first.
 pub fn clone(repo: &Path, url: &str) -> Result<(), String> {
     git::clone_recurse(repo, url)?;
     // Check that it is a valid dotty repository
@@ -24,6 +36,18 @@ pub fn clone(repo: &Path, url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Takes the given files under dotty's management and commits them.
+///
+/// Each path is moved into the repository and replaced with a symlink pointing
+/// back at it, so the files stay exactly where the programs that read them
+/// expect. Directories are expanded into their individual files, except for
+/// directories that are git repositories of their own — those become
+/// submodules, which is how a vim plugin or a zsh theme is tracked without
+/// absorbing its history.
+///
+/// A path that is already managed is skipped, and a path that cannot be added
+/// is logged and stepped over rather than aborting the whole run. Everything
+/// that did move lands in a single commit.
 pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String> {
     let mut to_commit: Vec<PathBuf> = Vec::new();
     let mut submodules: Vec<PathBuf> = Vec::new();
@@ -67,6 +91,17 @@ pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>) -> Result<(), String>
     Ok(())
 }
 
+/// Puts every file the repository tracks back onto the machine.
+///
+/// This is the other half of [`add`], and the command you run on a new machine
+/// after [`clone`]. With `symlinks` the files are linked back to the
+/// repository, so future edits are picked up by `dotty sync`; without it they
+/// are copied, leaving a machine that does not depend on the repository
+/// sticking around.
+///
+/// `overwrite` decides what happens to files already on the machine: with it,
+/// they are moved into a temporary directory that is reported in the logs;
+/// without it, a conflict is an error and nothing is touched.
 pub fn restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Result<(), String> {
     let overwrite = match overwrite {
         true => Some(fs::create_overwrite_temp_dir("dotty-")?),
@@ -107,6 +142,8 @@ pub fn restore(repo: &Path, root: &Path, symlinks: bool, overwrite: bool) -> Res
     Ok(())
 }
 
+/// Fetches, merges and pushes the repository, adopting `url` as `origin` if
+/// one is given.
 pub fn sync(repo: &Path, url: Option<&str>) -> Result<(), String> {
     let git_repo = git::open(repo)?;
     git::sync(&git_repo, url)?;
@@ -114,6 +151,11 @@ pub fn sync(repo: &Path, url: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// Upgrades every submodule to the latest commit on its default branch, and
+/// commits the new pointers.
+///
+/// This is how plugins and themes tracked as submodules get updated. When there
+/// are no submodules there is nothing to commit, and the run is a no-op.
 pub fn update(repo: &Path) -> Result<(), String> {
     let git_repo = git::open(repo)?;
 
@@ -129,12 +171,22 @@ pub fn update(repo: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// What a path turned out to be, which decides how it gets tracked.
 #[derive(PartialEq)]
 enum PathType {
+    /// Tracked as an ordinary file in the repository.
     File,
+    /// Tracked as a submodule, keeping its own history separate.
     GitRepo,
 }
 
+/// Expands the requested paths into the individual things that will be tracked.
+///
+/// Directories are walked into and reduced to their files, so the repository
+/// mirrors the real layout. The walk stops at any directory that is a git
+/// repository: that is recorded as a whole, to become a submodule.
+///
+/// Returns an error if any requested path does not exist.
 fn flatten_paths_to_add(paths: &Vec<PathBuf>) -> Result<Vec<(PathBuf, PathType)>, String> {
     let mut path_stack = Vec::new();
 
@@ -162,6 +214,10 @@ fn flatten_paths_to_add(paths: &Vec<PathBuf>) -> Result<Vec<(PathBuf, PathType)>
     Ok(flattened)
 }
 
+/// Moves one path into the repository and symlinks it back.
+///
+/// Returns the path relative to the root — the form everything downstream
+/// wants — or `None` when the file was already managed and nothing moved.
 fn move_to_dotty_repo(repo: &Path, root: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
     let relative_path = path::relative_from_root(root, path)?;
     let to = repo.join(&relative_path);
@@ -177,6 +233,10 @@ fn move_to_dotty_repo(repo: &Path, root: &Path, path: &Path) -> Result<Option<Pa
     })
 }
 
+/// Builds the commit message for an `add`.
+///
+/// A single file is named directly; several are summarised by the directory
+/// they share, with the full list in the commit body.
 fn build_git_message(to_commit: &Vec<PathBuf>) -> String {
     match to_commit.len() {
         0 => String::default(),

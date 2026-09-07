@@ -1,3 +1,14 @@
+//! dotty — dotfiles managed as a git repository.
+//!
+//! The idea is small: keep every dotfile in one git repository, and leave a
+//! symlink behind wherever the file used to be. Programs go on reading
+//! `~/.vimrc` without knowing anything changed, while the actual file — and its
+//! history — lives somewhere you can commit and push.
+//!
+//! This module is the command line front end. It parses arguments, resolves the
+//! repository and root directories once, and hands off to [`cmds`], where each
+//! subcommand is implemented.
+
 mod cmds;
 mod utils;
 
@@ -94,6 +105,13 @@ struct Sync {
 #[derive(Parser)]
 struct Update {}
 
+/// Sets up terminal logging, with `-v` raising the level each time it is given:
+/// warnings by default, then info, debug and trace.
+///
+/// Output is deliberately bare — no timestamps or thread names — because this
+/// is a foreground tool whose logs are read as they scroll past, and the extra
+/// columns only get in the way. From `-vv` the log target and source location
+/// are added, which is what you want when you are actually debugging.
 fn init_logger(opts: &Opts) {
     let level = match opts.verbose {
         0 => log::LevelFilter::Warn,
@@ -121,6 +139,11 @@ fn init_logger(opts: &Opts) {
     }
 }
 
+/// Resolves the repository and root directories, then dispatches to the command.
+///
+/// Both paths are canonicalized here, once, so that everything downstream can
+/// compare them and strip one from the other without worrying about `~`,
+/// relative paths or symlinks.
 fn run(opts: &Opts) -> Result<(), String> {
     let repo = path::canonicalize(&opts.repository)?;
     let root = path::canonicalize(&path::get_root(opts.root.as_deref(), &repo)?)?;
@@ -144,6 +167,7 @@ fn run(opts: &Opts) -> Result<(), String> {
     }
 }
 
+/// Parses arguments, starts logging, and reports any failure as a log message.
 fn main() {
     let opts: Opts = Opts::parse();
     init_logger(&opts);

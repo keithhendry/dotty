@@ -1,6 +1,21 @@
+//! Working out where files live, and where they belong in the repository.
+//!
+//! Paths reach dotty from three places — the command line, the `DOTTY_*`
+//! environment variables and the contents of the repository itself — in all
+//! sorts of shapes: relative, tilde-prefixed, symlinked or not yet existing.
+//! Everything here exists to reduce them to one comparable form, because the
+//! rest of the program relies on being able to strip the root prefix off a
+//! path to decide where its counterpart belongs.
+
 use home_dir::HomeDirExt;
 use std::path::{Path, PathBuf};
 
+/// Expands a leading `~` and resolves `path` to an absolute, symlink-free form.
+///
+/// Unlike [`Path::canonicalize`], `path` does not need to exist: the deepest
+/// ancestor that does exist is canonicalized and the missing components are
+/// appended to it. That matters because dotty is routinely handed paths that
+/// have not been created yet, such as `~/.dotty` on the very first `dotty init`.
 pub fn canonicalize(path: &Path) -> Result<PathBuf, String> {
     let tilde_expanded = match path.expand_home() {
         Ok(expanded) => expanded,
@@ -23,6 +38,12 @@ pub fn canonicalize(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+/// Canonicalizes `path`, walking up to the first ancestor that exists.
+///
+/// Only the existing ancestor can be resolved by the OS, so the components
+/// below it are re-joined one at a time as the recursion unwinds. They must be
+/// joined by file name: joining the full (absolute) path instead would discard
+/// the canonicalized prefix entirely, silently leaving symlinks unresolved.
 fn canonicalize_missing(path: &Path) -> Result<PathBuf, String> {
     if path.exists() {
         return match path.canonicalize() {
@@ -46,6 +67,11 @@ fn canonicalize_missing(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
+/// Decides which directory dotfile paths are tracked relative to.
+///
+/// An explicitly configured `root` always wins. Otherwise the repository's
+/// parent directory is used, which puts a repository at `~/.dotty` in charge of
+/// `~` — the arrangement dotty is designed around.
 pub fn get_root(root: Option<&Path>, repo: &Path) -> Result<PathBuf, String> {
     if let Some(path) = root {
         log::trace!("using specified root {}", path.display());
@@ -66,6 +92,14 @@ pub fn get_root(root: Option<&Path>, repo: &Path) -> Result<PathBuf, String> {
     ))
 }
 
+/// Strips `root` from `path`, yielding the location shared by both copies.
+///
+/// A dotfile has the same relative path under the root and under the
+/// repository, so this one value locates the original file, its counterpart in
+/// the repository, and its entry in git.
+///
+/// Both arguments must already be canonical, and `path` must live below `root`
+/// and not be `root` itself — the repository cannot contain itself.
 pub fn relative_from_root(root: &Path, path: &Path) -> Result<PathBuf, String> {
     let relative = match path.strip_prefix(root) {
         Ok(sub_path) => sub_path.to_owned(),
@@ -86,6 +120,11 @@ pub fn relative_from_root(root: &Path, path: &Path) -> Result<PathBuf, String> {
     Ok(relative)
 }
 
+/// Returns the deepest directory that every path in `paths` sits under.
+///
+/// Used to summarise a multi-file commit ("adding 12 files to .config"). Paths
+/// sharing no components at all yield an empty path, and absolute paths always
+/// share at least the root.
 pub fn common_base_path(paths: &[PathBuf]) -> PathBuf {
     paths.iter().fold(PathBuf::new(), |accum, item| {
         if accum.as_os_str().is_empty() {

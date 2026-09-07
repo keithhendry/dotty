@@ -1,121 +1,156 @@
 # dotty
 
-A simple dotfiles utility that manages dotfiles as a git repository.
+**Your dotfiles, in a git repository, without moving a single file out of place.**
 
-`dotty` moves the files and directories you point it at into a git repository, then
-replaces the originals with symlinks back to that repository. This gives you a single
-git repo you can commit, push, and clone onto other machines, while the files still
-appear in their normal locations on disk. Directories that are themselves git
-repositories (e.g. vim/tmux plugin managers) are tracked as git submodules instead of
-being flattened.
+[![Builds](https://github.com/keithhendry/dotty/actions/workflows/build.yaml/badge.svg)](https://github.com/keithhendry/dotty/actions/workflows/build.yaml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## Installation
+Point dotty at a config file and it moves the file into a git repository, then
+leaves a symlink where the file used to be. Vim still reads `~/.vimrc`, your
+shell still reads `~/.zshrc`, and neither of them knows anything changed — but
+now the real file is version controlled, and one command gets it onto your next
+machine.
 
-### macOS (Homebrew)
+```console
+$ dotty add ~/.zshrc ~/.config/nvim
+
+$ ls -l ~/.zshrc
+lrwxr-xr-x  1 you  staff  20 Sep  7 11:04 /Users/you/.zshrc -> /Users/you/.dotty/.zshrc
+```
+
+That's the whole idea. The repository mirrors your home directory, so what you
+see in git is exactly the layout you already know.
+
+## Why dotty
+
+- **Plugins stay plugins.** Point dotty at a directory that is already a git
+  repository — a vim plugin, a zsh theme, a tmux plugin manager — and it is
+  tracked as a **submodule** instead of being swallowed whole. You get a
+  pointer, not three thousand files of somebody else's history. `dotty update`
+  upgrades all of them in one go.
+- **One binary, nothing else.** dotty is a single static executable with git
+  built in via libgit2. No Python, no Ruby, no shell framework to bootstrap, and
+  nothing to install on the machine you are setting up.
+- **It won't clobber your files.** Restoring onto a machine that already has a
+  `.zshrc` is an error, not a silent overwrite. Ask for `--overwrite` and the
+  existing files are *moved aside* to a temporary directory rather than deleted.
+- **Commits happen for you.** `dotty add` moves the file, creates the symlink
+  and writes a sensible commit in one step. `dotty sync` is fetch, merge and
+  push together.
+- **Take the files and leave.** `dotty restore --mode files` copies real files
+  instead of symlinks, for a container or a machine you're only borrowing and
+  don't want depending on a repository sticking around.
+
+## Install
+
+### macOS and Linux (Homebrew)
 
 ```sh
 brew install keithhendry/dotty/dotty
 ```
 
-This taps [keithhendry/homebrew-dotty](https://github.com/keithhendry/homebrew-dotty)
-and installs `dotty`.
-
 ### From source
+
+Requires Rust 1.98 or later.
 
 ```sh
 cargo install --git https://github.com/keithhendry/dotty
 ```
 
-## Usage
+Prebuilt binaries for macOS (Apple silicon and Intel) and Linux (x86-64) are
+also attached to every [release](https://github.com/keithhendry/dotty/releases).
 
+> dotty uses unix symlinks, so macOS and Linux are supported. Windows is not.
+
+## Quick start
+
+On the machine that already has the dotfiles you care about:
+
+```sh
+dotty init                                   # create ~/.dotty
+dotty add ~/.zshrc ~/.gitconfig ~/.config/nvim
+dotty sync https://github.com/you/dotfiles.git   # adopt the remote and push
 ```
-dotty [OPTIONS] <SUBCOMMAND>
+
+On the next machine:
+
+```sh
+dotty clone https://github.com/you/dotfiles.git  # fetch, submodules included
+dotty restore                                    # symlink everything into place
+```
+
+From then on, `dotty sync` in either direction is enough to keep them together.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `dotty init` | Creates an empty dotty repository. Safe to re-run. |
+| `dotty clone <url>` | Clones an existing dotty repository and its submodules. Doesn't touch your files — run `restore` when you're ready. |
+| `dotty add <paths...>` | Moves files into the repository, symlinks them back, and commits. Directories are expanded into their files; directories that are git repositories become submodules. |
+| `dotty restore` | Puts the repository's files back onto the machine. |
+| `dotty sync [url]` | Fetches, merges and pushes. Pass a URL to set or change `origin`. |
+| `dotty update` | Fast-forwards every submodule to the latest commit on its default branch, and commits the result. |
+
+### `dotty restore`
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `-m, --mode <symlinks\|files>` | `symlinks` | Symlink back to the repository, or copy real files out of it. |
+| `-o, --overwrite` | off | Move conflicting files aside into a temporary directory instead of failing. |
+
+```sh
+dotty restore                  # symlink everything into place
+dotty restore --mode files     # copy instead, leaving no dependency on the repo
+dotty restore --overwrite      # stash anything already there, then restore
 ```
 
 ### Global options
 
-| Option | Env var | Default | Description |
+| Option | Environment variable | Default | Description |
 | --- | --- | --- | --- |
-| `-r, --repository <PATH>` | `DOTTY_REPOSITORY` | `~/.dotty` | Path to the dotty git repository |
-| `-R, --root <PATH>` | `DOTTY_ROOT` | parent directory of the repository | Root directory that dotfiles live relative to |
-| `-v, --verbose` | | | Increase log verbosity, repeatable (`-v`, `-vv`, `-vvv`) |
+| `-r, --repository <PATH>` | `DOTTY_REPOSITORY` | `~/.dotty` | Where the dotty repository lives. |
+| `-R, --root <PATH>` | `DOTTY_ROOT` | the repository's parent directory | The directory your dotfiles are tracked relative to. |
+| `-v, --verbose` | | warnings only | Repeatable: `-v` info, `-vv` debug, `-vvv` trace. |
 
-### Subcommands
+## How it works
 
-#### `init`
+A dotfile has the same path under your home directory as it does inside the
+repository, and that single fact is the whole model:
 
-Initializes a new, empty dotty repository at `--repository`.
-
-```sh
-dotty init
+```
+~/.zshrc                 ->  ~/.dotty/.zshrc
+~/.config/nvim/init.lua  ->  ~/.dotty/.config/nvim/init.lua
 ```
 
-#### `clone <url>`
+`add` moves a file along that mapping and symlinks it back. `restore` walks the
+mapping in the other direction. Because the repository is an ordinary git
+repository, anything dotty doesn't do you can still do with `git` directly —
+inspect it, rebase it, or hand it to someone else.
 
-Clones an existing dotty repository (and its submodules, recursively) from `<url>`
-into `--repository`.
+By default the repository lives at `~/.dotty` and the root is its parent, `~`.
+Point `--repository` and `--root` somewhere else and the same rules apply, so
+you can keep a repository of project configs somewhere entirely different.
 
-```sh
-dotty clone git@github.com:you/dotfiles.git
-```
+**Authentication** is delegated to the git credential helper you have already
+configured, so pushing to a private HTTPS remote uses the same credentials
+`git push` does.
 
-#### `add <paths...>`
+**`dotty sync` refuses to run on a dirty working tree,** and stops at a merge
+conflict rather than guessing — the conflict is left checked out for you to
+resolve with git as usual.
 
-Moves the given files/directories into the dotty repository, replaces each with a
-symlink pointing back into the repository, and commits the result. Paths must live
-under `--root`. Directories that are git repositories are added as submodules rather
-than being copied file by file.
-
-```sh
-dotty add ~/.vimrc ~/.config/nvim ~/.gitconfig
-```
-
-#### `restore`
-
-Restores everything currently tracked in the dotty repository back into `--root`, by
-default as symlinks.
+## Development
 
 ```sh
-dotty restore                    # create symlinks
-dotty restore --mode files       # copy files instead of symlinking
-dotty restore --overwrite        # replace conflicting existing files/symlinks
+cargo build                                     # build
+cargo test                                      # run the test suite
+cargo clippy --all-targets -- -D warnings       # lint
+cargo fmt                                       # format
 ```
 
-`--overwrite` moves any conflicting files aside into a temp directory rather than
-deleting them.
-
-#### `sync [url]`
-
-Fetches, merges, and pushes the dotty repository against its `origin` remote (or
-`[url]`, which is set as `origin` if given). Fails if there are unstaged changes or
-merge conflicts.
-
-```sh
-dotty sync
-dotty sync git@github.com:you/dotfiles.git
-```
-
-#### `update`
-
-Fetches and fast-forwards every submodule in the dotty repository to its remote
-default branch, then commits the update.
-
-```sh
-dotty update
-```
-
-## Example workflow
-
-```sh
-# On your first machine
-dotty init
-dotty add ~/.zshrc ~/.gitconfig ~/.config/nvim
-dotty sync git@github.com:you/dotfiles.git
-
-# On another machine
-dotty clone git@github.com:you/dotfiles.git
-dotty restore
-```
+Pull request titles follow [Conventional Commits](https://www.conventionalcommits.org/),
+which is what drives release labelling and versioning.
 
 ## License
 
