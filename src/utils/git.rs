@@ -22,9 +22,12 @@
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use git2::{
     AnnotatedCommit, AutotagOption, Commit, Config, Cred, CredentialType, ErrorCode, FetchOptions,
-    Index, Oid, PushOptions, Reference, Remote, RemoteCallbacks, RemoteUpdateFlags, Repository,
-    ResetType, SubmoduleUpdateOptions,
+    Index, MergeOptions, Oid, PushOptions, Reference, Remote, RemoteCallbacks, RemoteUpdateFlags,
+    ResetType, Status, StatusOptions, SubmoduleIgnore, SubmoduleStatus, SubmoduleUpdateOptions,
 };
+// Re-exported so that `cmds` can hold an open repository without having to
+// depend on git2 itself; this module is the only place that talks to it.
+pub use git2::Repository;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -338,6 +341,130 @@ pub fn is_submodule(repo: &Repository, path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// What the working tree holds that the last commit does not.
+#[derive(Debug, Default, PartialEq)]
+pub struct PendingChanges {
+    /// Tracked paths that were edited, deleted or replaced since the last
+    /// commit, and submodules whose recorded commit moved.
+    pub tracked: Vec<PathBuf>,
+    /// Paths sitting in the repository that git has never been told about.
+    pub untracked: Vec<PathBuf>,
+}
+
+/// The status flags that mean a tracked path no longer matches what was
+/// committed, whether the difference is staged or not.
+fn tracked_change() -> Status {
+    Status::WT_MODIFIED
+        | Status::WT_DELETED
+        | Status::WT_TYPECHANGE
+        | Status::WT_RENAMED
+        | Status::INDEX_NEW
+        | Status::INDEX_MODIFIED
+        | Status::INDEX_DELETED
+        | Status::INDEX_TYPECHANGE
+        | Status::INDEX_RENAMED
+}
+
+/// Splits the working tree's differences into what dotty can commit and what it
+/// cannot.
+///
+/// Dirt *inside* a submodule is deliberately not reported. A submodule's files
+/// belong to its own repository, so a plugin writing its own helptags is not
+/// something the dotfiles repository can ever commit — and counting it as a
+/// change left every later sync refusing to run over a file dotty had no way to
+/// clear. A submodule whose recorded commit moved is a real change, and is
+/// reported.
+pub fn pending_changes(repo: &Repository) -> Result<PendingChanges, String> {
+    git_helper(
+        || {
+            let mut opts = StatusOptions::new();
+            opts.include_untracked(true)
+                .recurse_untracked_dirs(true)
+                .include_ignored(false);
+
+            let mut changes = PendingChanges::default();
+            for entry in repo.statuses(Some(&mut opts))?.iter() {
+                let path = match entry.path() {
+                    Ok(path) => PathBuf::from(path),
+                    Err(err) => {
+                        log::debug!("skipping a path git could not decode - {}", err);
+                        continue;
+                    }
+                };
+                let status = entry.status();
+
+                if is_submodule(repo, &path) && !submodule_pointer_moved(repo, &path) {
+                    log::debug!(
+                        "ignoring changes inside submodule {} - they belong to its own repository",
+                        path.display()
+                    );
+                    continue;
+                }
+
+                if status.intersects(tracked_change()) {
+                    changes.tracked.push(path);
+                } else if status.intersects(Status::WT_NEW) {
+                    changes.untracked.push(path);
+                }
+            }
+
+            changes.tracked.sort();
+            changes.untracked.sort();
+            Ok(changes)
+        },
+        |err| {
+            format!(
+                "failed to read the status of git repository {} - {}",
+                repo.path().display(),
+                err
+            )
+        },
+    )
+}
+
+/// Whether the commit a submodule sits at differs from the one recorded, as
+/// opposed to it merely having uncommitted files of its own.
+fn submodule_pointer_moved(repo: &Repository, path: &Path) -> bool {
+    let name = match path.to_str() {
+        Some(name) => name,
+        // Not something that can be looked up, so let the caller treat it as a
+        // change rather than silently dropping it.
+        None => return true,
+    };
+    match repo.submodule_status(name, SubmoduleIgnore::Dirty) {
+        Ok(status) => {
+            status.intersects(SubmoduleStatus::WD_MODIFIED | SubmoduleStatus::INDEX_MODIFIED)
+        }
+        Err(err) => {
+            log::debug!("could not read the status of submodule {} - {}", name, err);
+            true
+        }
+    }
+}
+
+/// Stages every change to an already-tracked path, deletions included.
+///
+/// Untracked paths are left alone: bringing a new file under management is what
+/// `add` is for, and sweeping one up here would commit whatever happened to be
+/// sitting in the repository.
+pub fn stage_tracked_changes(repo: &Repository) -> Result<(), String> {
+    git_helper(
+        || {
+            let mut index = repo.index()?;
+            index.update_all(["*"].iter(), None)?;
+            index.write()?;
+            Ok(())
+        },
+        |err| {
+            format!(
+                "failed to stage changes in git repository {} - {}",
+                repo.path().display(),
+                err
+            )
+        },
+    )
+}
+
 /// Drops a submodule's section from `.gitmodules`.
 ///
 /// The file is git config, so it is edited as config rather than as text. The
@@ -448,19 +575,43 @@ fn drop_empty_sections(contents: &str) -> String {
 /// Passing a `url` points `origin` at it, creating or updating the remote as
 /// needed, which is how the first `dotty sync <url>` adopts a remote.
 ///
-/// Refuses to run when the working tree is dirty, and stops at a merge conflict
-/// rather than trying to resolve it — leaving the conflict checked out for the
-/// user to sort out with git directly. A fast-forward is taken where possible,
-/// otherwise a merge commit is created.
+/// Refuses to run when a tracked file has changes that were never committed,
+/// since the merge would have to check out over them. Untracked files and files
+/// belonging to a submodule do not block it — see [`pending_changes`]. A merge
+/// conflict stops the run with the merge left in progress, so it can be
+/// finished or abandoned with git in the usual way. A fast-forward is taken
+/// where possible, otherwise a merge commit is created.
 pub fn sync(repo: &Repository, url: Option<&str>) -> Result<(), String> {
+    // Reported before the git_helper below so the advice survives, rather than
+    // being wrapped in "failed to sync changes in ...".
+    let unborn = find_last_commit(repo)
+        .map_err(|err| {
+            format!(
+                "failed to read HEAD of git repository {} - {}",
+                repo.path().display(),
+                err
+            )
+        })?
+        .is_none();
+    if unborn {
+        return Err(format!(
+            "{} has no commits to sync yet - add a file with dotty add first",
+            repo.path().display()
+        ));
+    }
+
+    let pending = pending_changes(repo)?;
+    if !pending.tracked.is_empty() {
+        return Err(format!(
+            "{} has uncommitted changes to {} - commit them with dotty commit \
+             (dotty sync does that for you unless --no-commit is given)",
+            repo.path().display(),
+            path_list(&pending.tracked),
+        ));
+    }
+
     git_helper(
         || {
-            if !repo.statuses(None)?.is_empty() {
-                return Err(git2::Error::from_str(&format!(
-                    "there are unstaged changes in {}",
-                    repo.path().display()
-                )));
-            }
             let branch_name = get_branch_name(repo)?;
             let mut remote = get_remote(repo, url)?;
 
@@ -483,6 +634,13 @@ pub fn sync(repo: &Repository, url: Option<&str>) -> Result<(), String> {
                     fetch_commit,
                     remote.url().unwrap_or("unknown"),
                 )?;
+
+                // A merge only moves the commit a submodule is recorded at; the
+                // submodule's own working tree still holds the old checkout.
+                // Leaving it there reported the repository as dirty, which then
+                // blocked every later sync -- so a sync that pulled in a new
+                // pointer used to break the next one.
+                checkout_submodules(repo)?;
             }
 
             log::debug!("pushing branch {}", branch_name);
@@ -894,8 +1052,14 @@ fn fast_forward(
 
 /// Creates a merge commit joining the local and remote commits.
 ///
-/// Conflicts are checked out into the working tree and reported as an error;
-/// dotty deliberately leaves resolving them to the user and git.
+/// Conflicts are reported as an error with the merge left in progress; dotty
+/// deliberately leaves resolving them to the user and git.
+///
+/// The merge goes through [`Repository::merge`] rather than merging the trees
+/// directly, because that is what writes `MERGE_HEAD`. Without it the working
+/// tree ended up full of conflict markers that `git merge --abort` refused to
+/// undo and `git merge --continue` refused to finish, leaving no way out of a
+/// failed sync but a hand-written `git reset`.
 fn normal_merge(
     repo: &Repository,
     local: &AnnotatedCommit,
@@ -903,24 +1067,33 @@ fn normal_merge(
     remote_url: &str,
 ) -> Result<(), git2::Error> {
     log::debug!("merge {} into {}", remote.id(), local.id());
+
+    let mut merge_opts = MergeOptions::new();
+    let mut checkout = CheckoutBuilder::new();
+    checkout.safe();
+    repo.merge(&[remote], Some(&mut merge_opts), Some(&mut checkout))?;
+
+    let mut index = repo.index()?;
+    if index.has_conflicts() {
+        let conflicting: Vec<String> = index
+            .conflicts()?
+            .filter_map(|conflict| conflict.ok())
+            .filter_map(|conflict| conflict.our.or(conflict.their))
+            .map(|entry| String::from_utf8_lossy(&entry.path).into_owned())
+            .collect();
+        return Err(git2::Error::from_str(&format!(
+            "merge conflicts in {}. the merge is left in progress: resolve them \
+             and commit, or run git -C {} merge --abort to back out",
+            path_list(&conflicting.iter().map(PathBuf::from).collect::<Vec<_>>()),
+            repo.workdir().unwrap_or(repo.path()).display(),
+        )));
+    }
+
     let local_commit = repo.find_commit(local.id())?;
     let remote_commit = repo.find_commit(remote.id())?;
-    let ancestor = repo
-        .find_commit(repo.merge_base(local.id(), remote.id())?)?
-        .tree()?;
-    let mut idx = repo.merge_trees(
-        &ancestor,
-        &local_commit.tree()?,
-        &remote_commit.tree()?,
-        None,
-    )?;
-    if idx.has_conflicts() {
-        repo.checkout_index(Some(&mut idx), None)?;
-        return Err(git2::Error::from_str("merge conficts detected"));
-    }
-    let result_tree = repo.find_tree(idx.write_tree_to(repo)?)?;
+    let result_tree = repo.find_tree(index.write_tree()?)?;
     let sig = repo.signature()?;
-    let _merge_commit = repo.commit(
+    repo.commit(
         Some("HEAD"),
         &sig,
         &sig,
@@ -928,8 +1101,45 @@ fn normal_merge(
         &result_tree,
         &[&local_commit, &remote_commit],
     )?;
+
+    // Clears MERGE_HEAD, which is what tells git the merge finished.
+    repo.cleanup_state()?;
     repo.checkout_head(Some(CheckoutBuilder::new().force()))?;
     Ok(())
+}
+
+/// Checks every submodule out at the commit the repository now records.
+fn checkout_submodules(repo: &Repository) -> Result<(), git2::Error> {
+    let mut checkout_builder = CheckoutBuilder::new();
+    checkout_builder.force();
+
+    let mut fetch_opts = FetchOptions::new();
+    fetch_opts.remote_callbacks(create_callbacks());
+
+    let mut opts = SubmoduleUpdateOptions::new();
+    opts.checkout(checkout_builder);
+    opts.fetch(fetch_opts);
+    opts.allow_fetch(true);
+
+    update_submodules_recursive(repo, true, &mut opts)
+}
+
+/// Names a handful of paths for an error message, summarising the rest.
+///
+/// Errors get read in a terminal, so a list of every path in a large repository
+/// is worse than useless; the first few are what tell the user which change
+/// they forgot about.
+fn path_list(paths: &[PathBuf]) -> String {
+    const NAMED: usize = 3;
+    let named: Vec<String> = paths
+        .iter()
+        .take(NAMED)
+        .map(|path| path.display().to_string())
+        .collect();
+    match paths.len().saturating_sub(NAMED) {
+        0 => named.join(", "),
+        rest => format!("{} and {} more", named.join(", "), rest),
+    }
 }
 
 /// Checks out every submodule, and every submodule of those, breadth first.

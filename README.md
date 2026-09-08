@@ -86,7 +86,13 @@ dotty clone https://github.com/you/dotfiles.git  # fetch, submodules included
 dotty restore                                    # symlink everything into place
 ```
 
-From then on, `dotty sync` in either direction is enough to keep them together.
+From then on, `dotty sync` in either direction is enough to keep them together
+— including after you edit a dotfile, which sync commits for you:
+
+```sh
+vim ~/.zshrc     # editing the symlink edits the file in the repository
+dotty sync       # commits the edit, merges anything new, and pushes
+```
 
 ## Commands
 
@@ -96,7 +102,8 @@ From then on, `dotty sync` in either direction is enough to keep them together.
 | `dotty clone <url>` | Clones an existing dotty repository and its submodules. Doesn't touch your files — run `restore` when you're ready. |
 | `dotty add <paths...>` | Moves files into the repository, symlinks them back, and commits. Directories are expanded into their files; directories that are git repositories become submodules. |
 | `dotty restore` | Puts the repository's files back onto the machine. |
-| `dotty sync [url]` | Fetches, merges and pushes. Pass a URL to set or change `origin`. |
+| `dotty commit` | Commits changes to files already tracked. Takes `-m` for a message of your own. |
+| `dotty sync [url]` | Commits outstanding changes, then fetches, merges and pushes. Pass a URL to set or change `origin`. |
 | `dotty update` | Fast-forwards every submodule to the latest commit on its default branch, and commits the result. |
 | `dotty status` | Shows what the repository tracks and how each file stands on this machine. Changes nothing. |
 | `dotty remove <paths...>` | Stops managing files: moves the real file back where the symlink was, and commits the removal. Nothing is deleted. |
@@ -202,9 +209,22 @@ you can keep a repository of project configs somewhere entirely different.
 ssh agent, and HTTPS remotes go through your configured git credential helper.
 If `git push` works for a remote, `dotty sync` should too.
 
-**`dotty sync` refuses to run on a dirty working tree,** and stops at a merge
-conflict rather than guessing — the conflict is left checked out for you to
-resolve with git as usual.
+**`dotty sync` commits before it fetches.** Editing `~/.zshrc` edits the real
+file inside the repository, since what sits in your home directory is a symlink
+to it — so sync stages and commits changes to tracked files first, under a
+message summarising what changed. `dotty commit -m "..."` does the same step on
+its own when you want to write the message yourself, and `dotty sync --no-commit`
+leaves the commit to you and refuses to run until you have made it.
+
+Two things sync deliberately leaves alone. **Untracked files** in the repository
+are reported and skipped, because dotty cannot tell a config file you copied in
+by hand from a stray `.DS_Store` — run `dotty add` to take one on. **Files
+belonging to a submodule** are its own repository's business, so a plugin
+writing its own helptags is not treated as a change to your dotfiles.
+
+**A merge conflict stops the sync with the merge left in progress**, rather than
+guessing at a resolution. Resolve the conflict and commit, or back the whole
+thing out with `git -C ~/.dotty merge --abort`.
 
 ## Development
 
