@@ -608,8 +608,38 @@ fn sync_pushes_to_a_newly_adopted_remote() {
     );
 }
 
+// Editing a managed dotfile edits the file inside the repository, because what
+// sits in the home directory is a symlink to it. That is the everyday case, and
+// sync has to carry it rather than stopping on it.
 #[test]
-fn sync_refuses_to_run_with_uncommitted_changes() {
+fn sync_commits_an_edit_to_a_managed_dotfile() {
+    let machine = Machine::new();
+    let remote = Remote::new(&machine.home);
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".zshrc", "shell\n");
+    assert_ok(&machine.dotty(&["add", ".zshrc"]));
+    assert_ok(&machine.dotty(&["sync", &remote.url()]));
+
+    // Edited through the symlink, exactly as an editor would.
+    machine.write(".zshrc", "shell\nedited\n");
+    assert_ok(&machine.dotty(&["sync"]));
+
+    let remote_path = remote.path.to_str().unwrap().to_owned();
+    assert_eq!(
+        git_ok(
+            &machine.home,
+            &["-C", &remote_path, "log", "-1", "--format=%s", "main"]
+        ),
+        "updating .zshrc"
+    );
+    assert_eq!(
+        git_ok(&machine.home, &["-C", &remote_path, "show", "main:.zshrc"]),
+        "shell\nedited"
+    );
+}
+
+#[test]
+fn sync_refuses_to_run_with_uncommitted_changes_when_told_not_to_commit() {
     let machine = Machine::new();
     let remote = Remote::new(&machine.home);
     assert_ok(&machine.dotty(&["init"]));
@@ -617,11 +647,48 @@ fn sync_refuses_to_run_with_uncommitted_changes() {
     assert_ok(&machine.dotty(&["add", ".zshrc"]));
     fs::write(machine.repo().join(".zshrc"), "edited but not committed\n").unwrap();
 
+    let output = machine.dotty(&["sync", "--no-commit", &remote.url()]);
+
+    assert_failed(&output);
+    assert!(
+        text(&output).contains("uncommitted changes to .zshrc"),
+        "got: {}",
+        text(&output)
+    );
+}
+
+// An untracked file is not dotty's to commit, but it used to make the whole
+// repository count as dirty and so block every sync.
+#[test]
+fn sync_steps_over_an_untracked_file_and_says_so() {
+    let machine = Machine::new();
+    let remote = Remote::new(&machine.home);
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".zshrc", "shell\n");
+    assert_ok(&machine.dotty(&["add", ".zshrc"]));
+    fs::write(machine.repo().join(".DS_Store"), "junk").unwrap();
+
+    let output = machine.dotty(&["sync", &remote.url()]);
+
+    assert_ok(&output);
+    assert!(
+        text(&output).contains(".DS_Store is in the repository but not tracked"),
+        "got: {}",
+        text(&output)
+    );
+}
+
+#[test]
+fn sync_on_a_repository_with_no_commits_explains_itself() {
+    let machine = Machine::new();
+    let remote = Remote::new(&machine.home);
+    assert_ok(&machine.dotty(&["init"]));
+
     let output = machine.dotty(&["sync", &remote.url()]);
 
     assert_failed(&output);
     assert!(
-        text(&output).contains("unstaged changes"),
+        text(&output).contains("no commits to sync yet"),
         "got: {}",
         text(&output)
     );
@@ -677,6 +744,250 @@ fn sync_brings_down_changes_made_on_another_machine() {
     assert_eq!(
         fs::read_to_string(second.repo().join(".gitconfig_extra")).unwrap(),
         "second\n"
+    );
+}
+
+// A merge that pulls in a new submodule pointer has to check the submodule out
+// too. Leaving it at the old commit reported the repository as dirty, so a sync
+// that appeared to succeed made the *next* one fail.
+#[test]
+fn sync_checks_out_a_submodule_the_merge_moved() {
+    let first = Machine::new();
+    let remote = Remote::new(&first.home);
+    let upstream = Remote::new(&first.home);
+
+    let source = Machine::new();
+    source.plugin(".src", &upstream.url(), "version 1\n");
+    let source_dir = source.path(".src");
+    let source_dir = source_dir.to_str().unwrap();
+    git_ok(&source.home, &["-C", source_dir, "push", "origin", "main"]);
+
+    let installed = first.path(".vim/plugged/nifty");
+    fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    git_ok(
+        &first.home,
+        &["clone", &upstream.url(), installed.to_str().unwrap()],
+    );
+    assert_ok(&first.dotty(&["init"]));
+    assert_ok(&first.dotty(&["add", ".vim/plugged/nifty"]));
+    assert_ok(&first.dotty(&["sync", &remote.url()]));
+
+    let second = Machine::new();
+    assert_ok(&second.dotty(&["clone", &remote.url()]));
+
+    // The plugin releases a new version and the first machine picks it up.
+    fs::write(source.path(".src/plugin.vim"), "version 2\n").unwrap();
+    git_ok(&source.home, &["-C", source_dir, "commit", "-am", "v2"]);
+    git_ok(&source.home, &["-C", source_dir, "push", "origin", "main"]);
+    assert_ok(&first.dotty(&["update"]));
+    assert_ok(&first.dotty(&["sync"]));
+
+    assert_ok(&second.dotty(&["sync"]));
+
+    assert_eq!(
+        fs::read_to_string(second.repo().join(".vim/plugged/nifty/plugin.vim")).unwrap(),
+        "version 2\n",
+        "the submodule should have been checked out at the merged commit"
+    );
+    // The real regression: the stale checkout left the repository dirty, which
+    // blocked every sync after it.
+    assert_ok(&second.dotty(&["sync"]));
+}
+
+// A submodule's own files belong to its own repository, so the dotfiles
+// repository can never commit them. Counting them as changes wedged sync with
+// no way out through dotty.
+#[test]
+fn sync_ignores_files_a_submodule_wrote_for_itself() {
+    let machine = Machine::new();
+    let remote = Remote::new(&machine.home);
+    let upstream = Remote::new(&machine.home);
+
+    let source = Machine::new();
+    source.plugin(".src", &upstream.url(), "version 1\n");
+    let source_dir = source.path(".src");
+    git_ok(
+        &source.home,
+        &["-C", source_dir.to_str().unwrap(), "push", "origin", "main"],
+    );
+
+    let installed = machine.path(".vim/plugged/nifty");
+    fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    git_ok(
+        &machine.home,
+        &["clone", &upstream.url(), installed.to_str().unwrap()],
+    );
+    assert_ok(&machine.dotty(&["init"]));
+    assert_ok(&machine.dotty(&["add", ".vim/plugged/nifty"]));
+    assert_ok(&machine.dotty(&["sync", &remote.url()]));
+
+    // The kind of file a plugin generates for itself, such as vim's helptags.
+    fs::write(
+        machine.repo().join(".vim/plugged/nifty/tags"),
+        "generated\n",
+    )
+    .unwrap();
+
+    assert_ok(&machine.dotty(&["sync"]));
+}
+
+// Conflict markers land in files that are symlinked into the home directory, so
+// backing the merge out has to actually work.
+#[test]
+fn a_conflicting_sync_leaves_a_merge_that_can_be_aborted() {
+    let first = Machine::new();
+    let remote = Remote::new(&first.home);
+    assert_ok(&first.dotty(&["init"]));
+    first.write(".zshrc", "shell\n");
+    assert_ok(&first.dotty(&["add", ".zshrc"]));
+    assert_ok(&first.dotty(&["sync", &remote.url()]));
+
+    let second = Machine::new();
+    assert_ok(&second.dotty(&["clone", &remote.url()]));
+    assert_ok(&second.dotty(&["restore"]));
+
+    // Both machines edit the same line, and the first one pushes.
+    first.write(".zshrc", "shell\nfrom the first machine\n");
+    assert_ok(&first.dotty(&["sync"]));
+    second.write(".zshrc", "shell\nfrom the second machine\n");
+
+    let output = second.dotty(&["sync"]);
+
+    assert_failed(&output);
+    assert!(
+        text(&output).contains("merge conflicts in .zshrc"),
+        "got: {}",
+        text(&output)
+    );
+
+    // The merge is left in progress, so git can back it out in the usual way.
+    let repo = second.repo();
+    let repo = repo.to_str().unwrap();
+    assert!(second.repo().join(".git/MERGE_HEAD").exists());
+    git_ok(&second.home, &["-C", repo, "merge", "--abort"]);
+    assert_eq!(second.read(".zshrc"), "shell\nfrom the second machine\n");
+}
+
+// ---------------------------------------------------------------- commit
+
+#[test]
+fn commit_records_an_edit_to_a_managed_dotfile() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".zshrc", "shell\n");
+    assert_ok(&machine.dotty(&["add", ".zshrc"]));
+
+    machine.write(".zshrc", "shell\nedited\n");
+    assert_ok(&machine.dotty(&["commit"]));
+
+    assert_eq!(
+        git_ok(
+            &machine.home,
+            &[
+                "-C",
+                machine.repo().to_str().unwrap(),
+                "log",
+                "-1",
+                "--format=%s"
+            ]
+        ),
+        "updating .zshrc"
+    );
+}
+
+#[test]
+fn commit_takes_a_message_of_its_own() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".zshrc", "shell\n");
+    assert_ok(&machine.dotty(&["add", ".zshrc"]));
+
+    machine.write(".zshrc", "shell\nedited\n");
+    assert_ok(&machine.dotty(&["commit", "-m", "add a shell alias"]));
+
+    assert_eq!(
+        git_ok(
+            &machine.home,
+            &[
+                "-C",
+                machine.repo().to_str().unwrap(),
+                "log",
+                "-1",
+                "--format=%s"
+            ]
+        ),
+        "add a shell alias"
+    );
+}
+
+#[test]
+fn commit_dry_run_changes_nothing() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".zshrc", "shell\n");
+    assert_ok(&machine.dotty(&["add", ".zshrc"]));
+    machine.write(".zshrc", "shell\nedited\n");
+
+    let before = git_ok(
+        &machine.home,
+        &["-C", machine.repo().to_str().unwrap(), "rev-parse", "HEAD"],
+    );
+    let output = machine.dotty(&["commit", "--dry-run"]);
+
+    assert_ok(&output);
+    assert!(
+        text(&output).contains("would commit .zshrc"),
+        "got: {}",
+        text(&output)
+    );
+    assert_eq!(
+        git_ok(
+            &machine.home,
+            &["-C", machine.repo().to_str().unwrap(), "rev-parse", "HEAD"]
+        ),
+        before
+    );
+}
+
+#[test]
+fn commit_with_nothing_to_do_says_so() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".zshrc", "shell\n");
+    assert_ok(&machine.dotty(&["add", ".zshrc"]));
+
+    let output = machine.dotty(&["commit"]);
+
+    assert_ok(&output);
+    assert!(
+        text(&output).contains("nothing to commit"),
+        "got: {}",
+        text(&output)
+    );
+}
+
+#[test]
+fn commit_records_a_dotfile_deleted_from_the_home_directory() {
+    let machine = Machine::new();
+    assert_ok(&machine.dotty(&["init"]));
+    machine.write(".zshrc", "shell\n");
+    assert_ok(&machine.dotty(&["add", ".zshrc"]));
+
+    fs::remove_file(machine.repo().join(".zshrc")).unwrap();
+    assert_ok(&machine.dotty(&["commit"]));
+
+    assert_eq!(
+        git_ok(
+            &machine.home,
+            &[
+                "-C",
+                machine.repo().to_str().unwrap(),
+                "ls-files",
+                "--",
+                ".zshrc"
+            ]
+        ),
+        ""
     );
 }
 
@@ -1174,7 +1485,7 @@ fn help_lists_every_subcommand() {
 
     let help = text(&output);
     for subcommand in [
-        "init", "clone", "add", "restore", "sync", "update", "status",
+        "init", "clone", "add", "restore", "commit", "sync", "update", "status",
     ] {
         assert!(
             help.contains(subcommand),

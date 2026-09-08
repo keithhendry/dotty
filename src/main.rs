@@ -13,7 +13,7 @@ mod cmds;
 mod utils;
 
 use clap::{ArgAction, Parser, ValueEnum};
-use cmds::{add, clone, init, remove, restore, status, sync, update};
+use cmds::{add, clone, commit, init, remove, restore, status, sync, update};
 use simplelog::*;
 use std::path::PathBuf;
 use std::process;
@@ -53,6 +53,8 @@ enum SubCommand {
     Add(Add),
     /// Restores files to the root
     Restore(Restore),
+    /// Commits changes to files dotty already tracks
+    Commit(Commit),
     /// Syncs the dotty repository with the remote
     Sync(Sync),
     /// Updates the submodules in the dotty repository
@@ -109,10 +111,25 @@ enum RestoreMode {
 }
 
 #[derive(Parser)]
+struct Commit {
+    /// The commit message. Defaults to a summary of what changed
+    #[clap(short, long)]
+    message: Option<String>,
+
+    /// Shows what would happen without changing anything
+    #[clap(long)]
+    dry_run: bool,
+}
+
+#[derive(Parser)]
 struct Sync {
     /// The repository url to sync to
     #[clap()]
     url: Option<String>,
+
+    /// Leaves uncommitted changes alone instead of committing them first
+    #[clap(long)]
+    no_commit: bool,
 }
 
 #[derive(Parser)]
@@ -192,7 +209,10 @@ fn run(opts: &Opts) -> Result<(), String> {
             restore_cmd.overwrite,
             restore_cmd.dry_run,
         ),
-        SubCommand::Sync(sync_cmd) => sync(&repo, sync_cmd.url.as_deref()),
+        SubCommand::Commit(commit_cmd) => {
+            commit(&repo, commit_cmd.message.as_deref(), commit_cmd.dry_run)
+        }
+        SubCommand::Sync(sync_cmd) => sync(&repo, sync_cmd.url.as_deref(), sync_cmd.no_commit),
         SubCommand::Update(_) => update(&repo),
         SubCommand::Status(_) => status(&repo, &root),
         SubCommand::Remove(remove_cmd) => {

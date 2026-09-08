@@ -107,7 +107,7 @@ pub fn add(repo: &Path, root: &Path, paths: &Vec<PathBuf>, dry_run: bool) -> Res
         git::unstage_all(&git_repo)?;
         git::add_submodules(&git_repo, &submodules)?;
         git::stage_all_paths(&git_repo, &to_commit)?;
-        git::commit(&git_repo, &build_git_message(&to_commit))?;
+        git::commit(&git_repo, &build_change_message("adding", "to", &to_commit))?;
 
         println!(
             "added {} to {}",
@@ -368,10 +368,102 @@ pub fn status(repo: &Path, root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Fetches, merges and pushes the repository, adopting `url` as `origin` if
-/// one is given.
-pub fn sync(repo: &Path, url: Option<&str>) -> Result<(), String> {
+/// Commits outstanding changes to files dotty already tracks.
+///
+/// Editing a dotfile edits the real file inside the repository, because what
+/// sits in the home directory is a symlink to it. Nothing else in dotty commits
+/// that edit — `add` only takes on paths it does not already track — so without
+/// this the only way to record a change to a tracked file was to reach past
+/// dotty and use git by hand.
+///
+/// Untracked paths are reported and left alone: bringing something new under
+/// management is what [`add`] is for.
+pub fn commit(repo: &Path, message: Option<&str>, dry_run: bool) -> Result<(), String> {
     let git_repo = git::open(repo)?;
+    let pending = git::pending_changes(&git_repo)?;
+    report_untracked(&pending);
+
+    if pending.tracked.is_empty() {
+        println!("nothing to commit in {}", repo.display());
+        return Ok(());
+    }
+
+    if dry_run {
+        for path in &pending.tracked {
+            println!("would commit {}", path.display());
+        }
+        println!(
+            "{} would be committed; nothing was changed",
+            path_count(pending.tracked.len())
+        );
+        return Ok(());
+    }
+
+    commit_pending(&git_repo, &pending, message)?;
+    println!(
+        "committed {} in {}",
+        path_count(pending.tracked.len()),
+        repo.display()
+    );
+    Ok(())
+}
+
+/// Commits the tracked half of `pending`, under `message` or a generated one.
+///
+/// The index is deliberately not reset first: anything the user staged by hand
+/// is already in `pending.tracked`, and dropping it would mean reporting a path
+/// as committed that was not.
+fn commit_pending(
+    git_repo: &git::Repository,
+    pending: &git::PendingChanges,
+    message: Option<&str>,
+) -> Result<(), String> {
+    git::check_signature(git_repo)?;
+    git::stage_tracked_changes(git_repo)?;
+    let message = match message {
+        Some(message) => message.to_owned(),
+        None => build_change_message("updating", "in", &pending.tracked),
+    };
+    git::commit(git_repo, &message)?;
+    Ok(())
+}
+
+/// Warns about anything sitting in the repository that git does not track.
+///
+/// These are skipped rather than committed — dotty cannot tell a config file
+/// someone copied in by hand from a `.DS_Store` — but silently leaving them out
+/// of a sync would mean the file quietly never reached the other machine.
+fn report_untracked(pending: &git::PendingChanges) {
+    for path in &pending.untracked {
+        log::warn!(
+            "{} is in the repository but not tracked by git, so it will not be synced",
+            path.display()
+        );
+    }
+}
+
+/// Commits outstanding changes, then fetches, merges and pushes the repository,
+/// adopting `url` as `origin` if one is given.
+///
+/// The commit comes first because a merge has to check out over the working
+/// tree, so an uncommitted edit to a tracked file would either be clobbered or
+/// stop the sync. Passing `no_commit` keeps the commit for you to make yourself
+/// and turns that situation back into an error.
+pub fn sync(repo: &Path, url: Option<&str>, no_commit: bool) -> Result<(), String> {
+    let git_repo = git::open(repo)?;
+
+    let pending = git::pending_changes(&git_repo)?;
+    report_untracked(&pending);
+
+    if !no_commit && !pending.tracked.is_empty() {
+        commit_pending(&git_repo, &pending, None)?;
+        println!(
+            "committed {} in {}",
+            path_count(pending.tracked.len()),
+            repo.display()
+        );
+    }
+
     git::sync(&git_repo, url)?;
     println!("synced {}", repo.display());
     Ok(())
@@ -638,20 +730,27 @@ fn build_removal_message(removed: &Vec<PathBuf>) -> String {
     }
 }
 
-/// Builds the commit message for an `add`.
+/// Builds a commit message describing what `verb` was done to `to_commit`.
 ///
 /// A single file is named directly; several are summarised by the directory
 /// they share, with the full list in the commit body. Files sharing no
-/// directory at all are summarised by count alone.
-fn build_git_message(to_commit: &Vec<PathBuf>) -> String {
+/// directory at all are summarised by count alone. `preposition` is what joins
+/// the count to that directory — files are added *to* one but updated *in* it.
+fn build_change_message(verb: &str, preposition: &str, to_commit: &Vec<PathBuf>) -> String {
     match to_commit.len() {
         0 => String::default(),
-        1 => format!("adding {}", to_commit.first().unwrap().display()),
+        1 => format!("{} {}", verb, to_commit.first().unwrap().display()),
         _ => {
             let base = path::common_base_path(to_commit);
             let mut msg = match base.as_os_str().is_empty() {
-                true => format!("adding {} files\n\n", to_commit.len()),
-                false => format!("adding {} files to {}\n\n", to_commit.len(), base.display()),
+                true => format!("{} {} files\n\n", verb, to_commit.len()),
+                false => format!(
+                    "{} {} files {} {}\n\n",
+                    verb,
+                    to_commit.len(),
+                    preposition,
+                    base.display()
+                ),
             };
             for path in to_commit {
                 msg.push_str(&format!("- {}\n", path.display()));
@@ -867,13 +966,16 @@ mod tests {
     #[test]
     fn build_git_message_for_a_single_file() {
         let paths = vec![PathBuf::from(".vimrc")];
-        assert_eq!(build_git_message(&paths), "adding .vimrc");
+        assert_eq!(
+            build_change_message("adding", "to", &paths),
+            "adding .vimrc"
+        );
     }
 
     #[test]
     fn build_git_message_for_multiple_files() {
         let paths = vec![PathBuf::from(".config/a"), PathBuf::from(".config/b")];
-        let message = build_git_message(&paths);
+        let message = build_change_message("adding", "to", &paths);
         assert!(message.starts_with("adding 2 files to .config"));
         assert!(message.contains("- .config/a\n"));
         assert!(message.contains("- .config/b\n"));
@@ -881,16 +983,135 @@ mod tests {
 
     #[test]
     fn build_git_message_for_no_files_is_empty() {
-        assert_eq!(build_git_message(&vec![]), "");
+        assert_eq!(build_change_message("adding", "to", &vec![]), "");
     }
 
     #[test]
     fn build_git_message_omits_base_path_when_there_is_none() {
         let paths = vec![PathBuf::from(".zshrc"), PathBuf::from(".config/nvim")];
-        let message = build_git_message(&paths);
+        let message = build_change_message("adding", "to", &paths);
 
         assert!(message.starts_with("adding 2 files\n"));
         assert!(message.contains("- .zshrc\n"));
         assert!(message.contains("- .config/nvim\n"));
+    }
+
+    #[test]
+    fn build_change_message_uses_the_verb_and_preposition_it_is_given() {
+        let paths = vec![PathBuf::from(".config/a"), PathBuf::from(".config/b")];
+        let message = build_change_message("updating", "in", &paths);
+
+        assert!(message.starts_with("updating 2 files in .config"));
+    }
+
+    #[test]
+    fn pending_changes_ignores_a_file_that_was_never_added() {
+        let (_dir, repo_path) = canonical_tempdir();
+        let git_repo = git::init_or_open(&repo_path).unwrap();
+        configure_signature(&repo_path);
+        std::fs::write(repo_path.join(".vimrc"), "set nu").unwrap();
+
+        let pending = git::pending_changes(&git_repo).unwrap();
+
+        assert!(pending.tracked.is_empty());
+        assert_eq!(pending.untracked, vec![PathBuf::from(".vimrc")]);
+    }
+
+    #[test]
+    fn pending_changes_reports_an_edit_to_a_tracked_file() {
+        let (_dir, repo_path) = canonical_tempdir();
+        let git_repo = git::init_or_open(&repo_path).unwrap();
+        configure_signature(&repo_path);
+        std::fs::write(repo_path.join(".vimrc"), "set nu").unwrap();
+        git::stage_all_paths(&git_repo, &vec![PathBuf::from(".vimrc")]).unwrap();
+        git::commit(&git_repo, "adding .vimrc").unwrap();
+
+        std::fs::write(repo_path.join(".vimrc"), "set nu\nset ai").unwrap();
+        let pending = git::pending_changes(&git_repo).unwrap();
+
+        assert_eq!(pending.tracked, vec![PathBuf::from(".vimrc")]);
+        assert!(pending.untracked.is_empty());
+    }
+
+    #[test]
+    fn pending_changes_reports_a_deleted_tracked_file() {
+        let (_dir, repo_path) = canonical_tempdir();
+        let git_repo = git::init_or_open(&repo_path).unwrap();
+        configure_signature(&repo_path);
+        std::fs::write(repo_path.join(".vimrc"), "set nu").unwrap();
+        git::stage_all_paths(&git_repo, &vec![PathBuf::from(".vimrc")]).unwrap();
+        git::commit(&git_repo, "adding .vimrc").unwrap();
+
+        std::fs::remove_file(repo_path.join(".vimrc")).unwrap();
+        let pending = git::pending_changes(&git_repo).unwrap();
+
+        assert_eq!(pending.tracked, vec![PathBuf::from(".vimrc")]);
+    }
+
+    #[test]
+    fn commit_records_an_edit_to_a_tracked_file() {
+        let (_dir, repo_path) = canonical_tempdir();
+        let git_repo = git::init_or_open(&repo_path).unwrap();
+        configure_signature(&repo_path);
+        std::fs::write(repo_path.join(".vimrc"), "set nu").unwrap();
+        git::stage_all_paths(&git_repo, &vec![PathBuf::from(".vimrc")]).unwrap();
+        git::commit(&git_repo, "adding .vimrc").unwrap();
+
+        std::fs::write(repo_path.join(".vimrc"), "set nu\nset ai").unwrap();
+        commit(&repo_path, None, false).unwrap();
+
+        assert!(git::pending_changes(&git_repo).unwrap().tracked.is_empty());
+        assert_eq!(
+            git_repo
+                .head()
+                .unwrap()
+                .peel_to_commit()
+                .unwrap()
+                .message()
+                .unwrap(),
+            "updating .vimrc"
+        );
+    }
+
+    #[test]
+    fn commit_dry_run_leaves_the_change_uncommitted() {
+        let (_dir, repo_path) = canonical_tempdir();
+        let git_repo = git::init_or_open(&repo_path).unwrap();
+        configure_signature(&repo_path);
+        std::fs::write(repo_path.join(".vimrc"), "set nu").unwrap();
+        git::stage_all_paths(&git_repo, &vec![PathBuf::from(".vimrc")]).unwrap();
+        git::commit(&git_repo, "adding .vimrc").unwrap();
+
+        std::fs::write(repo_path.join(".vimrc"), "set nu\nset ai").unwrap();
+        commit(&repo_path, None, true).unwrap();
+
+        assert_eq!(
+            git::pending_changes(&git_repo).unwrap().tracked,
+            vec![PathBuf::from(".vimrc")]
+        );
+    }
+
+    #[test]
+    fn commit_takes_a_message_of_its_own() {
+        let (_dir, repo_path) = canonical_tempdir();
+        let git_repo = git::init_or_open(&repo_path).unwrap();
+        configure_signature(&repo_path);
+        std::fs::write(repo_path.join(".vimrc"), "set nu").unwrap();
+        git::stage_all_paths(&git_repo, &vec![PathBuf::from(".vimrc")]).unwrap();
+        git::commit(&git_repo, "adding .vimrc").unwrap();
+
+        std::fs::write(repo_path.join(".vimrc"), "set nu\nset ai").unwrap();
+        commit(&repo_path, Some("tweak the vim leader key"), false).unwrap();
+
+        assert_eq!(
+            git_repo
+                .head()
+                .unwrap()
+                .peel_to_commit()
+                .unwrap()
+                .message()
+                .unwrap(),
+            "tweak the vim leader key"
+        );
     }
 }
