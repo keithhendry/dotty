@@ -1008,6 +1008,7 @@ mod tests {
     fn pending_changes_ignores_a_file_that_was_never_added() {
         let (_dir, repo_path) = canonical_tempdir();
         let git_repo = git::init_or_open(&repo_path).unwrap();
+        configure_signature(&repo_path);
         std::fs::write(repo_path.join(".vimrc"), "set nu").unwrap();
 
         let pending = git::pending_changes(&git_repo).unwrap();
@@ -1020,6 +1021,7 @@ mod tests {
     fn pending_changes_reports_an_edit_to_a_tracked_file() {
         let (_dir, repo_path) = canonical_tempdir();
         let git_repo = git::init_or_open(&repo_path).unwrap();
+        configure_signature(&repo_path);
         std::fs::write(repo_path.join(".vimrc"), "set nu").unwrap();
         git::stage_all_paths(&git_repo, &vec![PathBuf::from(".vimrc")]).unwrap();
         git::commit(&git_repo, "adding .vimrc").unwrap();
@@ -1035,6 +1037,7 @@ mod tests {
     fn pending_changes_reports_a_deleted_tracked_file() {
         let (_dir, repo_path) = canonical_tempdir();
         let git_repo = git::init_or_open(&repo_path).unwrap();
+        configure_signature(&repo_path);
         std::fs::write(repo_path.join(".vimrc"), "set nu").unwrap();
         git::stage_all_paths(&git_repo, &vec![PathBuf::from(".vimrc")]).unwrap();
         git::commit(&git_repo, "adding .vimrc").unwrap();
@@ -1049,6 +1052,7 @@ mod tests {
     fn commit_records_an_edit_to_a_tracked_file() {
         let (_dir, repo_path) = canonical_tempdir();
         let git_repo = git::init_or_open(&repo_path).unwrap();
+        configure_signature(&repo_path);
         std::fs::write(repo_path.join(".vimrc"), "set nu").unwrap();
         git::stage_all_paths(&git_repo, &vec![PathBuf::from(".vimrc")]).unwrap();
         git::commit(&git_repo, "adding .vimrc").unwrap();
@@ -1073,6 +1077,7 @@ mod tests {
     fn commit_dry_run_leaves_the_change_uncommitted() {
         let (_dir, repo_path) = canonical_tempdir();
         let git_repo = git::init_or_open(&repo_path).unwrap();
+        configure_signature(&repo_path);
         std::fs::write(repo_path.join(".vimrc"), "set nu").unwrap();
         git::stage_all_paths(&git_repo, &vec![PathBuf::from(".vimrc")]).unwrap();
         git::commit(&git_repo, "adding .vimrc").unwrap();
@@ -1090,6 +1095,7 @@ mod tests {
     fn commit_takes_a_message_of_its_own() {
         let (_dir, repo_path) = canonical_tempdir();
         let git_repo = git::init_or_open(&repo_path).unwrap();
+        configure_signature(&repo_path);
         std::fs::write(repo_path.join(".vimrc"), "set nu").unwrap();
         git::stage_all_paths(&git_repo, &vec![PathBuf::from(".vimrc")]).unwrap();
         git::commit(&git_repo, "adding .vimrc").unwrap();
